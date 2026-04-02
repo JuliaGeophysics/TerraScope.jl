@@ -1,0 +1,11 @@
+/Manifest.toml
+/.DS_Store
+
+# Generated exports
+/exports/
+/examples/*_Export2D_*/
+/examples/*_Export3D_*/
+/examples/*_ExportIso_*/
+
+# Local datasets and demo assets should never be committed
+/Data/
