@@ -37,7 +37,3 @@ Bundled demo assets are expected in `Data/`.
 - `.sgy` or `.segy`: 2D seismic line
 - `.vox`: TerraScope synthetic density voxel file
 
-## Notes
-
-- This repository is the only one modified by the implementation.
-- MTGeophysics.jl-patch-3D is used as a read-only reference for logic and demo data.
