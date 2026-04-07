@@ -1729,6 +1729,10 @@ function modem_3d_viewer_crosssections(
     current_kind = Observable(first(volume_order))
     current_volume() = volumes[current_kind[]]
 
+    layout_toggle_label(show_full::Bool) = show_full ? "Show 3D Only" : "Show Both Panels"
+    drape_toggle_label(has_drape::Bool, visible::Bool) = !has_drape ? "Drape N/A" : (visible ? "Hide Drape" : "Show Drape")
+    seismic_section_toggle_label(has_drape::Bool, visible::Bool) = !has_drape ? "Seismic Section N/A" : (visible ? "Hide Seismic Section" : "Show Seismic Section")
+
     function set_button_enabled!(btn, enabled::Bool, enabled_label::AbstractString, disabled_label::AbstractString)
         btn.label[] = enabled ? enabled_label : disabled_label
         if hasproperty(btn, :buttoncolor)
@@ -1756,7 +1760,9 @@ function modem_3d_viewer_crosssections(
     rowsize!(fig.layout, 4, Auto(44))
     colsize!(fig.layout, 1, Relative(0.94))
 
-    colorbar_widget = Colorbar(fig[1, 2], colormap = current_volume().cmap, limits = (current_volume().cmin, current_volume().cmax), label = current_volume().label, width = 16)
+    colorbar_slot = fig[1, 2] = GridLayout(tellwidth = false, tellheight = false, valign = :top)
+    rowsize!(colorbar_slot, 1, Fixed(36))
+    colorbar_widget = Colorbar(colorbar_slot[2, 1], colormap = current_volume().cmap, limits = (current_volume().cmin, current_volume().cmax), label = current_volume().label, width = 16)
     colsize!(fig.layout, 2, Relative(0.04))
 
     show_map_slice = Observable(false)
@@ -1775,8 +1781,8 @@ function modem_3d_viewer_crosssections(
     depth_lbl = Label(view_controls[1, 5], "Depth: $(round(-z[depth_slider.value[]], digits=0)) m", fontsize = 10, color = :gray35)
 
     btn_toggle_map = Button(view_controls[1, 6], label = "Show Map Slice", fontsize = 10)
-    btn_toggle_seis_curtain = Button(view_controls[1, 7], label = seismic_curtain === nothing ? "Seismic Curtain N/A" : "Hide Seismic Curtain", fontsize = 10)
-    btn_toggle_seis_section = Button(view_controls[1, 8], label = seismic_curtain === nothing ? "Seismic Section N/A" : (show_seis_model_section[] ? "Hide Seismic Section" : "Show Seismic Section"), fontsize = 10)
+    btn_toggle_seis_curtain = Button(view_controls[1, 7], label = drape_toggle_label(seismic_curtain !== nothing, show_seis_model_section[]), fontsize = 10)
+    btn_toggle_seis_section = Button(view_controls[1, 8], label = seismic_section_toggle_label(seismic_curtain !== nothing, show_seis_curtain[]), fontsize = 10)
     btn_reset = Button(view_controls[1, 9], label = "Reset View", fontsize = 10)
     btn_export_3d = Button(view_controls[1, 10], label = "Export 3D", fontsize = 10)
     btn_show_resistivity = Button(view_controls[1, 11], label = "Resistivity", fontsize = 10)
@@ -1838,6 +1844,28 @@ function modem_3d_viewer_crosssections(
 
     selector_ax = Axis(selector_grid[1, 1], title = "XY selector: left-click to add points, right-click/Finish to create section", aspect = DataAspect())
 
+    function update_selector_ticks!()
+        vol = current_volume()
+        xtick_vals = _nice_tick_values(minimum(vol.x), maximum(vol.x); target_count = 4)
+        ytick_vals = _nice_tick_values(minimum(vol.y), maximum(vol.y); target_count = 4)
+
+        if selector_show_latlon_ticks && xy_to_latlon !== nothing
+            yref = mean(vol.y)
+            xref = mean(vol.x)
+            selector_ax.xticks = (xtick_vals, [begin
+                lon, _ = xy_to_latlon(Float64(v), yref)
+                string(round(lon, digits = 2))
+            end for v in xtick_vals])
+            selector_ax.yticks = (ytick_vals, [begin
+                _, lat = xy_to_latlon(xref, Float64(v))
+                string(round(lat, digits = 2))
+            end for v in ytick_vals])
+        else
+            selector_ax.xticks = (xtick_vals, [_format_tick_value(v) for v in xtick_vals])
+            selector_ax.yticks = (ytick_vals, [_format_tick_value(v) for v in ytick_vals])
+        end
+    end
+
     if selector_show_latlon_ticks && xy_to_latlon !== nothing
         yref = mean(y)
         xref = mean(x)
@@ -1860,6 +1888,7 @@ function modem_3d_viewer_crosssections(
     y_edges = edges_from_centers(current_volume().y)
     selector_slice = Observable(copy(current_volume().values[:, :, depth_slider.value[]]))
     selector_hm = heatmap!(selector_ax, x_edges, y_edges, selector_slice, colormap = current_volume().cmap, colorrange = (current_volume().cmin, current_volume().cmax))
+    update_selector_ticks!()
     colsize!(selector_grid, 1, Relative(1.0))
 
     section_paths = Observable(Vector{Vector{Tuple{Float64, Float64}}}())
@@ -1907,7 +1936,8 @@ function modem_3d_viewer_crosssections(
     seismic_curtain_clipped = clip_seismic_curtain_to_depth(seismic_curtain, minimum(z))
 
     corner_controls = GridLayout(fig[1, 1], tellwidth = false, tellheight = false, halign = :right, valign = :top)
-    btn_toggle_view_mode = Button(corner_controls[1, 1], label = show_full_layout[] ? "Collapse Panels" : "Expand Panels", fontsize = 11, width = 150)
+    rowsize!(corner_controls, 1, Fixed(36))
+    btn_toggle_view_mode = Button(corner_controls[2, 1], label = layout_toggle_label(show_full_layout[]), fontsize = 11, width = 150)
 
     section_count() = length(section_paths[])
 
@@ -1958,9 +1988,9 @@ function modem_3d_viewer_crosssections(
     function update_axis_info!()
         vol = current_volume()
         dval = -vol.z[depth_slider.value[]]
-        seismic_status = (seismic_curtain !== nothing && show_seis_curtain[]) ? "ON" : "OFF"
-        seismic_model_status = (seismic_curtain !== nothing && show_seis_model_section[]) ? "ON" : "OFF"
-        axis_info[] = "Volume: $(vol.name)   |   Depth: $(round(dval, digits=0)) m   |   Sections: $(section_count())   |   Map slice: $(show_map_slice[] ? "ON" : "OFF")   |   Seismic: $(seismic_status)   |   Seis model: $(seismic_model_status)"
+        drape_status = (seismic_curtain !== nothing && show_seis_model_section[]) ? "ON" : "OFF"
+        seismic_section_status = (seismic_curtain !== nothing && show_seis_curtain[]) ? "ON" : "OFF"
+        axis_info[] = "Volume: $(vol.name)   |   Depth: $(round(dval, digits=0)) m   |   Sections: $(section_count())   |   Map slice: $(show_map_slice[] ? "ON" : "OFF")   |   Drape: $(drape_status)   |   Seismic section: $(seismic_section_status)"
     end
 
     function update_volume_controls!()
@@ -1972,6 +2002,7 @@ function modem_3d_viewer_crosssections(
         selector_hm.colormap = vol.cmap
         selector_hm.colorrange = (vol.cmin, vol.cmax)
         selector_slice[] = copy(vol.values[:, :, depth_slider.value[]])
+        update_selector_ticks!()
         btn_iso_color_mode.label[] = iso_color_by_depth[] ? "Color: Depth" : "Color: Property"
         iso_min_label.text[] = "Iso min ($(_volume_units_label(vol.kind))):"
         iso_max_label.text[] = "Iso max ($(_volume_units_label(vol.kind))):"
@@ -2401,7 +2432,7 @@ function modem_3d_viewer_crosssections(
         end
         colorbar_widget.blockscene.visible[] = show_full_layout[]
         selector_ax.blockscene.visible[] = show_full_layout[]
-        btn_toggle_view_mode.label[] = show_full_layout[] ? "Collapse Panels" : "Expand Panels"
+        btn_toggle_view_mode.label[] = layout_toggle_label(show_full_layout[])
     end
 
     function get_camera_triplet(scene)
@@ -2706,11 +2737,11 @@ function modem_3d_viewer_crosssections(
 
     on(btn_toggle_seis_curtain.clicks) do _
         if seismic_curtain === nothing
-            export_status[] = "No seismic curtain loaded"
+            export_status[] = "No seismic drape available"
             return
         end
-        show_seis_curtain[] = !show_seis_curtain[]
-        btn_toggle_seis_curtain.label[] = show_seis_curtain[] ? "Hide Seismic Curtain" : "Show Seismic Curtain"
+        show_seis_model_section[] = !show_seis_model_section[]
+        btn_toggle_seis_curtain.label[] = drape_toggle_label(true, show_seis_model_section[])
         redraw_scene!()
         update_axis_info!()
     end
@@ -2720,8 +2751,8 @@ function modem_3d_viewer_crosssections(
             export_status[] = "No seismic section available"
             return
         end
-        show_seis_model_section[] = !show_seis_model_section[]
-        btn_toggle_seis_section.label[] = show_seis_model_section[] ? "Hide Seismic Section" : "Show Seismic Section"
+        show_seis_curtain[] = !show_seis_curtain[]
+        btn_toggle_seis_section.label[] = seismic_section_toggle_label(true, show_seis_curtain[])
         redraw_scene!()
         update_axis_info!()
     end
@@ -2818,8 +2849,8 @@ function modem_3d_viewer_crosssections(
     end
 
     btn_toggle_map.label[] = show_map_slice[] ? "Hide Map Slice" : "Show Map Slice"
-    btn_toggle_seis_curtain.label[] = seismic_curtain === nothing ? "Seismic Curtain N/A" : (show_seis_curtain[] ? "Hide Seismic Curtain" : "Show Seismic Curtain")
-    btn_toggle_seis_section.label[] = seismic_curtain === nothing ? "Seismic Section N/A" : (show_seis_model_section[] ? "Hide Seismic Section" : "Show Seismic Section")
+    btn_toggle_seis_curtain.label[] = drape_toggle_label(seismic_curtain !== nothing, show_seis_model_section[])
+    btn_toggle_seis_section.label[] = seismic_section_toggle_label(seismic_curtain !== nothing, show_seis_curtain[])
 
     on(btn_export_iso.clicks) do _
         try
@@ -3031,10 +3062,12 @@ function main()
     println("  - Active controls: choose section for 2D export")
     println("  - Export 3D: saves main 3D view")
     println("  - Export 2D Section: saves flattened active section")
+    println("  - 'Show Drape' toggles the model section draped along the seismic line")
+    println("  - 'Show Seismic Section' toggles the SEG-Y seismic section")
     println("  - Iso controls: set value min/max and depth start/end, then click 'Apply Iso'")
     println("  - Iso color mode: toggle between resistivity color and depth color")
     println("  - Export Iso DXF: writes current solid iso-volume + parameter report")
-    println("  - Corner button switches between full TerraScope viewer and 3D-only scene")
+    println("  - Corner button switches between 'Show Both Panels' and 'Show 3D Only'")
     println("  - 3D-only scene keeps the current sections/isosurfaces/seismic overlays")
     println("  - 'Reset View': reset camera")
 
