@@ -64,7 +64,7 @@ DEFAULT_TERRASCOPE_LAUNCH_CONFIG = (
         ),
     ),
     view = (
-        default_view_direction = (-1.05, -0.80, 0.72),
+        default_view_direction = (-0.15, -1.05, 0.72),
         default_view_scale = 1.12,
         show_only_3d_scene = false,
         open_fullscreen = true,
@@ -1744,6 +1744,17 @@ function modem_3d_viewer_crosssections(
         return nothing
     end
 
+    _volume_buttons = Dict{Symbol, Any}()
+    _volume_base_labels = Dict{Symbol, String}()
+    function highlight_active_volume_button!(active_kind::Symbol)
+        for (kind, btn) in _volume_buttons
+            is_active = (kind == active_kind)
+            base = get(_volume_base_labels, kind, String(kind))
+            btn.font[] = is_active ? "TeX Gyre Heros Makie Bold" : "TeX Gyre Heros Makie"
+        end
+        return nothing
+    end
+
     seismic_display_mode = _resolve_seismic_display_mode(seismic_display_mode)
     seismic_curtain_colormap = seismic_display_mode == :envelope ? seismic_envelope_colormap : seismic_colormap
     seismic_curtain_colorrange = seismic_display_mode == :envelope ? seismic_envelope_range : (-1.0, 1.0)
@@ -1788,6 +1799,13 @@ function modem_3d_viewer_crosssections(
     btn_show_resistivity = Button(view_controls[1, 11], label = "Resistivity", fontsize = 10)
     btn_show_density = Button(view_controls[1, 12], label = haskey(volumes, :density) ? "Density" : "Density N/A", fontsize = 10)
     btn_show_susceptibility = Button(view_controls[1, 13], label = haskey(volumes, :susceptibility) ? "Susceptibility" : "Susceptibility N/A", fontsize = 10)
+    _volume_buttons[:resistivity] = btn_show_resistivity
+    _volume_buttons[:density] = btn_show_density
+    _volume_buttons[:susceptibility] = btn_show_susceptibility
+    _volume_base_labels[:resistivity] = "Resistivity"
+    _volume_base_labels[:density] = haskey(volumes, :density) ? "Density" : "Density N/A"
+    _volume_base_labels[:susceptibility] = haskey(volumes, :susceptibility) ? "Susceptibility" : "Susceptibility N/A"
+    highlight_active_volume_button!(current_kind[])
 
     btn_finish_section = Button(section_controls[1, 1], label = "Finish Section", fontsize = 9)
     btn_clear_points = Button(section_controls[1, 2], label = "Clear Points", fontsize = 9)
@@ -2012,9 +2030,7 @@ function modem_3d_viewer_crosssections(
         _set_textbox!(iso_depth_start_tb, string(defs.default_iso_depth_start_km))
         _set_textbox!(iso_depth_end_tb, string(defs.default_iso_depth_end_km))
         _set_textbox!(iso_opacity_tb, string(round(get(iso_alpha_by_kind, vol.kind, clamp(Float64(isosurface_defaults.alpha), 0.05, 0.95)), digits = 2)))
-        set_button_enabled!(btn_show_resistivity, true, "Resistivity", "Resistivity N/A")
-        set_button_enabled!(btn_show_density, haskey(volumes, :density), "Density", "Density N/A")
-        set_button_enabled!(btn_show_susceptibility, haskey(volumes, :susceptibility), "Susceptibility", "Susceptibility N/A")
+        highlight_active_volume_button!(current_kind[])
     end
 
     dynamic_plots = Any[]
@@ -2404,6 +2420,7 @@ function modem_3d_viewer_crosssections(
     end
 
     function redraw_scene!()
+        eye, look, up = get_camera_triplet(ax.scene)
         clear_dynamic_plots!()
         clear_isosurface_scene_plots!()
         draw_scene_on_axis!(ax; include_map_slice = show_map_slice[])
@@ -2413,6 +2430,9 @@ function modem_3d_viewer_crosssections(
         vol = current_volume()
         if show_outer_ticks_axis
             append!(axis_overlay_plots, draw_outer_axes!(ax; xv = vol.x, yv = vol.y, zv = vol.z, color = :gray65))
+        end
+        if eye !== nothing && look !== nothing && up !== nothing
+            update_cam!(ax.scene, eye, look, up)
         end
     end
 
@@ -2711,6 +2731,7 @@ function modem_3d_viewer_crosssections(
         end
         current_kind[] = kind
         set_close_to!(depth_slider, min(depth_slider.value[], length(current_volume().z)))
+        highlight_active_volume_button!(kind)
         update_volume_controls!()
         redraw_scene!()
         update_axis_info!()

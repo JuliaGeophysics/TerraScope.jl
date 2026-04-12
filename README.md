@@ -9,6 +9,14 @@ TerraScope.jl is a Makie-based local viewer for MT, density, shapefile, and seis
 - Discover bundled shapefiles and SEG-Y seismic lines in `Data/`.
 - Open a GLMakie viewer with depth slicing, section drawing, seismic curtain overlay, shapefile overlays, and isovolume export.
 
+## Precompilation
+
+After cloning, resolve dependencies and precompile the project so that startup is faster:
+
+```bash
+julia --project=. -e "using Pkg; Pkg.resolve(); Pkg.instantiate(); Pkg.precompile()"
+```
+
 ## Quick Start
 
 Run the app directly:

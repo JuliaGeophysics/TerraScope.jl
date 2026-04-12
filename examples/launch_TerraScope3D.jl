@@ -31,11 +31,11 @@ const TERRASCOPE_LAUNCH_CONFIG = (
 		),
 	),
 	view = (                                                                # Startup layout and camera behaviour.
-		open_fullscreen = true,                                              # Open the Makie window in fullscreen on launch.
-		show_only_3d_scene = false,                                          # `true` starts in 3D-only mode; `false` starts with controls and selector panel.
+		open_fullscreen = false,                                              # Open the Makie window in fullscreen on launch.
+		show_only_3d_scene = true,                                          # `true` starts in 3D-only mode; `false` starts with controls and selector panel.
 		show_outer_ticks_axis = true,                                        # Draw custom XYZ tick annotations around the 3D scene.
 		export_png_scale = 4,                                                # Export resolution multiplier for PNG outputs.
-		default_view_direction = (-1.05, -0.80, 0.72),                       # Default camera direction for the initial 3D view.
+		default_view_direction = (-0.15, -1.05, 0.72),                       # Default camera direction for the initial 3D view.
 		default_view_scale = 1.12,                                           # Default camera zoom/scale at startup.
 	),
 	coordinate = (                                                          # Coordinate-system controls for the 3D scene and bottom selector map.
@@ -46,11 +46,11 @@ const TERRASCOPE_LAUNCH_CONFIG = (
 		show = true,                                                        # Master on/off switch for loading any seismic product at startup.
 		display_mode = :envelope,                                           # `:original` uses signed amplitudes; `:envelope` uses the trace envelope.
 		trace_xy = :source,                                                 # Which SEG-Y coordinates to use for map location; `:source` is common.
-		max_traces = 1400,                                                  # Downsampling cap for traces to keep large SEG-Y files interactive.
-		max_samples = 1200,                                                 # Downsampling cap for samples to keep large SEG-Y files interactive.
+		max_traces = 2320,                                                  # Downsampling cap for traces to keep large SEG-Y files interactive.
+		max_samples = 2000,                                                 # Downsampling cap for samples to keep large SEG-Y files interactive.
 		sample_spacing_m = 12.5,                                            # Approximate distance between resampled seismic traces in meters.
 		clip_quantile = 0.995,                                              # Clips very large amplitudes for a cleaner seismic image.
-		show_model_section = true,                                          # Startup state for the model draped along the seismic line.
+		show_model_section = false,                                          # Startup state for the model draped along the seismic line.
 	),
 	overlay = (                                                            # GIS overlay styling and corner annotations.
 		show_north_arrow = true,                                            # Draw compass arrow in the 3D scene.
