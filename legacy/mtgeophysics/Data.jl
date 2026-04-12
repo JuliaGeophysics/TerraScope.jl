@@ -61,7 +61,6 @@ is_dataline(line::AbstractString) = begin
 end
 
 function load_data_modem(path::AbstractString)
-    println("Loading ModEM Data File: $path")
 
     μ0 = 4π * 1e-7
 

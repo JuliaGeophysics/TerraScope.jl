@@ -966,11 +966,16 @@ function plot_shapefile_on_3d!(ax, shapefile_path;
     ylo, yhi = isnothing(ylim) ? (-Inf, Inf) : (min(Float64(ylim[1]), Float64(ylim[2])), max(Float64(ylim[1]), Float64(ylim[2])))
     inside = (x, y) -> (x >= xlo && x <= xhi && y >= ylo && y <= yhi)
 
-    function plot_coords_recursive!(coords)
+    # Collect all segments into batched arrays with NaN separators
+    all_x = Float64[]
+    all_y = Float64[]
+    segments_count = 0
+
+    function collect_coords_recursive!(coords)
         if _is_xy(coords)
-            return 0
+            return
         elseif coords isa AbstractVector
-            isempty(coords) && return 0
+            isempty(coords) && return
             first_item = first(coords)
             if _is_xy(first_item)
                 xy = Tuple{Float64, Float64}[]
@@ -982,7 +987,6 @@ function plot_shapefile_on_3d!(ax, shapefile_path;
                     end
                 end
 
-                segments_plotted = 0
                 run_x = Float64[]
                 run_y = Float64[]
                 for (x, y) in xy
@@ -991,8 +995,13 @@ function plot_shapefile_on_3d!(ax, shapefile_path;
                         push!(run_y, y)
                     else
                         if length(run_x) >= 2
-                            lines!(ax, run_x, run_y, fill(z_fixed, length(run_x)), color = line_color, linewidth = line_width)
-                            segments_plotted += 1
+                            if !isempty(all_x)
+                                push!(all_x, NaN)
+                                push!(all_y, NaN)
+                            end
+                            append!(all_x, run_x)
+                            append!(all_y, run_y)
+                            segments_count += 1
                         end
                         empty!(run_x)
                         empty!(run_y)
@@ -1000,23 +1009,22 @@ function plot_shapefile_on_3d!(ax, shapefile_path;
                 end
 
                 if length(run_x) >= 2
-                    lines!(ax, run_x, run_y, fill(z_fixed, length(run_x)), color = line_color, linewidth = line_width)
-                    segments_plotted += 1
+                    if !isempty(all_x)
+                        push!(all_x, NaN)
+                        push!(all_y, NaN)
+                    end
+                    append!(all_x, run_x)
+                    append!(all_y, run_y)
+                    segments_count += 1
                 end
-
-                return segments_plotted
             else
-                count = 0
                 for part in coords
-                    count += plot_coords_recursive!(part)
+                    collect_coords_recursive!(part)
                 end
-                return count
             end
         end
-        return 0
     end
 
-    total_segments = 0
     for row in rows
         geom = GeoInterface.geometry(row)
         coords = try
@@ -1025,10 +1033,15 @@ function plot_shapefile_on_3d!(ax, shapefile_path;
             nothing
         end
         if !isnothing(coords)
-            total_segments += plot_coords_recursive!(coords)
+            collect_coords_recursive!(coords)
         end
     end
-    return total_segments
+
+    if !isempty(all_x)
+        all_z = [isnan(x) ? NaN : Float64(z_fixed) for x in all_x]
+        lines!(ax, all_x, all_y, all_z; color = line_color, linewidth = line_width)
+    end
+    return segments_count
 end
 
 function nearest_index(vals::AbstractVector{<:Real}, x::Real)
@@ -1467,6 +1480,11 @@ function clip_seismic_curtain_to_depth(seismic_curtain, min_z::Real)
 end
 
 function display_figure(fig; fullscreen::Bool = true)
+    # Force first frame render off-screen so window opens with content, not a black flash
+    try
+        Makie.colorbuffer(fig)
+    catch
+    end
     if fullscreen
         try
             screen = GLMakie.Screen(; fullscreen = true, float = false, focus_on_show = true)
@@ -1759,7 +1777,7 @@ function modem_3d_viewer_crosssections(
     seismic_curtain_colormap = seismic_display_mode == :envelope ? seismic_envelope_colormap : seismic_colormap
     seismic_curtain_colorrange = seismic_display_mode == :envelope ? seismic_envelope_range : (-1.0, 1.0)
 
-    fig = Figure(size = figsize)
+    fig = Figure(size = figsize, backgroundcolor = :gray95)
     ax = LScene(fig[1, 1], show_axis = false)
     controls = fig[2, 1] = GridLayout()
     selector_grid = fig[3, 1] = GridLayout()
@@ -2036,6 +2054,11 @@ function modem_3d_viewer_crosssections(
     dynamic_plots = Any[]
     isosurface_plots = Any[]
     axis_overlay_plots = Any[]
+
+    # Observable data for the map slice so depth changes update in-place
+    _map_slice_z = Observable(fill(z[1], length(x), length(y)))
+    _map_slice_color = Observable(zeros(Float64, length(x), length(y)))
+    _map_slice_handle = Ref{Any}(nothing)
     isosurface_triangles = Dict{Symbol, Vector{NTuple{3, NTuple{3, Float64}}}}()
     isosurface_params = Dict{Symbol, Dict{String, Any}}()
     iso_color_by_depth = Observable(Bool(isosurface_defaults.color_by_depth))
@@ -2058,6 +2081,7 @@ function modem_3d_viewer_crosssections(
             end
         end
         empty!(dynamic_plots)
+        _map_slice_handle[] = nothing
     end
 
     function clear_isosurface_plots!(kind::Union{Nothing, Symbol} = nothing)
@@ -2327,16 +2351,31 @@ function modem_3d_viewer_crosssections(
     function draw_scene_on_axis!(target_ax; include_map_slice::Bool)
         vol = current_volume()
         iz = min(depth_slider.value[], length(vol.z))
-        zmap = fill(vol.z[iz], length(vol.x), length(vol.y))
-        cmap_slice = vol.values[:, :, iz]
 
         if include_map_slice
-            h_map = surface!(target_ax, vol.x, vol.y, zmap;
-                color = cmap_slice,
-                colormap = vol.cmap,
-                colorrange = (vol.cmin, vol.cmax),
-                shading = NoShading)
-            target_ax === ax && push!(dynamic_plots, h_map)
+            if target_ax === ax
+                # Use persistent Observable-backed map slice for the main axis
+                _map_slice_z[] = fill(vol.z[iz], length(vol.x), length(vol.y))
+                _map_slice_color[] = vol.values[:, :, iz]
+                if _map_slice_handle[] === nothing
+                    h_map = surface!(ax, vol.x, vol.y, _map_slice_z;
+                        color = _map_slice_color,
+                        colormap = vol.cmap,
+                        colorrange = (vol.cmin, vol.cmax),
+                        shading = NoShading)
+                    _map_slice_handle[] = h_map
+                    push!(dynamic_plots, h_map)
+                end
+            else
+                # Export path: create a fresh one-off surface
+                zmap = fill(vol.z[iz], length(vol.x), length(vol.y))
+                cmap_slice = vol.values[:, :, iz]
+                h_map = surface!(target_ax, vol.x, vol.y, zmap;
+                    color = cmap_slice,
+                    colormap = vol.cmap,
+                    colorrange = (vol.cmin, vol.cmax),
+                    shading = NoShading)
+            end
         end
 
         if seismic_curtain_clipped !== nothing && show_seis_curtain[]
@@ -2433,6 +2472,17 @@ function modem_3d_viewer_crosssections(
         end
         if eye !== nothing && look !== nothing && up !== nothing
             update_cam!(ax.scene, eye, look, up)
+        end
+    end
+
+    function update_depth_slice!()
+        vol = current_volume()
+        iz = min(depth_slider.value[], length(vol.z))
+        depth_lbl.text[] = "Depth: $(round(-vol.z[iz], digits=0)) m"
+        selector_slice[] = vol.values[:, :, iz]
+        if show_map_slice[]
+            _map_slice_z[] = fill(vol.z[iz], length(vol.x), length(vol.y))
+            _map_slice_color[] = vol.values[:, :, iz]
         end
     end
 
@@ -2710,10 +2760,7 @@ function modem_3d_viewer_crosssections(
     end
 
     on(depth_slider.value) do v
-        vol = current_volume()
-        depth_lbl.text[] = "Depth: $(round(-vol.z[v], digits=0)) m"
-        selector_slice[] = vol.values[:, :, v]
-        redraw_scene!()
+        update_depth_slice!()
         update_axis_info!()
     end
 
@@ -2903,11 +2950,49 @@ function modem_3d_viewer_crosssections(
 end
 
 function main()
-    println("Loading ModEM model from: $model_file")
-    M = load_model_modem(model_file)
-    println("Loading ModEM data for georeference from: $data_file")
-    d = load_data_modem(data_file)
+    # ── TerraScope banner ────────────────────────────────────────────────
+    _LOGO = raw"""
+                                                                
+▄▄▄▄▄▄▄▄▄                       ▄▄▄▄▄▄▄                         
+▀▀▀███▀▀▀                      █████▀▀▀                         
+   ███ ▄█▀█▄ ████▄ ████▄  ▀▀█▄  ▀████▄  ▄████ ▄███▄ ████▄ ▄█▀█▄ 
+   ███ ██▄█▀ ██ ▀▀ ██ ▀▀ ▄█▀██    ▀████ ██    ██ ██ ██ ██ ██▄█▀ 
+   ███ ▀█▄▄▄ ██    ██    ▀█▄██ ███████▀ ▀████ ▀███▀ ████▀ ▀█▄▄▄ 
+                                                    ██          
+                                                    ▀▀           """
 
+    println()
+    println("  \e[90m┌──────────────────────────────────────────────────────┐\e[0m")
+    println("\e[36m$(_LOGO)\e[0m")
+    println("  \e[90m└──────────────────────────────────────────────────────┘\e[0m")
+    println()
+    println("  \e[3m\e[90mLet's look at diverse geophysical models together...\e[0m")
+    println("  \e[90mFeedback / Issues → pankaj.mishra@gtk.fi\e[0m")
+    println("  \e[90mData directory    → $(data_root)\e[0m")
+    println()
+
+    # ── Progress helpers ─────────────────────────────────────────────────
+    _total_steps = 9
+    _current_step = Ref(0)
+
+    function _step!(label::AbstractString; done::Bool = false)
+        _current_step[] += 1
+        n = _current_step[]
+        filled = round(Int, n / _total_steps * 30)
+        bar = "█"^filled * "░"^(30 - filled)
+        pct = lpad(string(round(Int, 100 * n / _total_steps)), 3)
+        icon = done ? "\e[32m✓\e[0m" : "\e[36m›\e[0m"
+        print("  $icon \e[90m[\e[0m$bar\e[90m]\e[0m $pct%%  $label")
+        done || print("…")
+        println()
+    end
+
+    # ── Load data ────────────────────────────────────────────────────────
+    _step!("Loading resistivity model")
+    M = load_model_modem(model_file)
+
+    _step!("Georeferencing model")
+    d = load_data_modem(data_file)
     x_target, y_target, lat0, lon0, shiftlat, shiftlon, lat_ref, lon_ref, mismatch_dim_consistent =
         model_xy_to_target_crs_centers(M, d, target_crs)
 
@@ -2958,42 +3043,40 @@ function main()
     end
 
     density_target = nothing
+    _step!("Loading density volume")
     if isfile(density_file)
         try
             density_target = load_local_mt_aligned_volume(density_file)
-            println("Loaded density volume from: $density_file")
         catch err
             @warn "Failed to load density voxel file; proceeding without density volume." exception=(err, catch_backtrace())
         end
-    else
-        @warn "Density voxel file not found; proceeding without density volume." density_file = density_file
     end
 
     susceptibility_target = nothing
+    _step!("Loading susceptibility volume")
     if isfile(susceptibility_file)
         try
             susceptibility_target = load_local_mt_aligned_volume(susceptibility_file)
-            println("Loaded susceptibility volume from: $susceptibility_file")
         catch err
             @warn "Failed to load susceptibility voxel file; proceeding without susceptibility volume." exception=(err, catch_backtrace())
         end
     end
 
     gravity_target = nothing
+    _step!("Loading gravity volume")
     if isfile(gravity_file)
         try
             gravity_target = load_project_crs_volume(gravity_file)
-            println("Loaded gravity volume from project CRS voxel: $gravity_file")
         catch err
             @warn "Failed to load gravity voxel file; proceeding without gravity volume." exception=(err, catch_backtrace())
         end
     end
 
     magnetic_target = nothing
+    _step!("Loading magnetic volume")
     if isfile(magnetic_file)
         try
             magnetic_target = load_project_crs_volume(magnetic_file)
-            println("Loaded magnetic volume from project CRS voxel: $magnetic_file")
         catch err
             @warn "Failed to load magnetic voxel file; proceeding without magnetic volume." exception=(err, catch_backtrace())
         end
@@ -3001,10 +3084,10 @@ function main()
 
     seismic_curtain = nothing
     resolved_seismic_display_mode = _resolve_seismic_display_mode(seismic_display_mode)
+    _step!("Loading seismic section")
     if show_seismic
         seismic_path = seismic_file === nothing ? "" : strip(String(seismic_file))
         if !isempty(seismic_path) && isfile(seismic_path)
-            println("Loading seismic line from: $seismic_path")
             try
                 seismic_curtain = load_seismic_curtain_from_segy(seismic_path;
                     trace_xy = seismic_trace_xy,
@@ -3014,38 +3097,13 @@ function main()
                     max_traces = seismic_max_traces,
                     max_samples = seismic_max_samples,
                     clip_quantile = seismic_clip_quantile)
-
-                println("Seismic loaded:")
-                println("  - full size: traces=$(seismic_curtain.n_traces), samples=$(seismic_curtain.n_samples)")
-                println("  - plotted: traces=$(seismic_curtain.n_traces_used), samples=$(seismic_curtain.n_samples_used)")
-                println("  - top depth z: $(round(seismic_curtain.line_z, digits = 2)) m")
-                println("  - display mode: $(resolved_seismic_display_mode)")
             catch err
                 @warn "Failed to load seismic SEG-Y; proceeding without seismic overlay." exception=(err, catch_backtrace())
             end
-        elseif isempty(seismic_path)
-            println("No seismic SEG-Y file set; proceeding without seismic overlay.")
-        else
-            @warn "Seismic file not found; proceeding without seismic overlay." seismic_file = seismic_path
         end
     end
 
-   # println("Model dimensions: $(size(M.A))")
-   # println("  X cells: $(length(M.cx))")
-   # println("  Y cells: $(length(M.cy))")
-   # println("  Z cells: $(length(M.cz))")
-   # println("Target CRS plotting:")
-   # println("  Target CRS: $target_crs")
-   # println("  Axis convention: X=Easting, Y=Northing (GIS-standard)")
-   # println("  Axis consistency mismatch: $(round(mismatch_dim_consistent, digits=4))")
-   # println("  X range: [$(round(minimum(x_target), digits=3)), $(round(maximum(x_target), digits=3))]")
-   # println("  Y range: [$(round(minimum(y_target), digits=3)), $(round(maximum(y_target), digits=3))]")
-    #println("  Reference lat/lon: ($(round(lat_ref, digits = 6)), $(round(lon_ref, digits = 6)))")
-   # println("Model georeference:")
-   # println("  Origin (lat, lon): ($(round(lat0, digits = 6)), $(round(lon0, digits = 6)))")
-    println("  Data alignment shift: Δlat=$(shiftlat), Δlon=$(shiftlon)")
-
-    println("\nLaunching 3D viewer (XY slice + manual cross-sections)...")
+    _step!("Building 3D scene")
     fig, parts = modem_3d_viewer_crosssections(M_target;
         density_model = density_target,
         susceptibility_model = susceptibility_target,
@@ -3073,28 +3131,12 @@ function main()
         scene_only_default = show_only_3d_scene
     )
 
-    println("\nViewer Controls:")
-    println("  - Drag: Rotate view")
-    println("  - Scroll: Zoom in/out")
-    println("  - Right-drag: Pan")
-    println("  - Map slice is OFF by default; use 'Show Map Slice' to display it")
-    println("  - Depth slider controls selector slice and optional 3D map slice")
-    println("  - XY selector: left-click multiple points, right-click (or Finish) to create section")
-    println("  - Active controls: choose section for 2D export")
-    println("  - Export 3D: saves main 3D view")
-    println("  - Export 2D Section: saves flattened active section")
-    println("  - 'Show Drape' toggles the model section draped along the seismic line")
-    println("  - 'Show Seismic Section' toggles the SEG-Y seismic section")
-    println("  - Iso controls: set value min/max and depth start/end, then click 'Apply Iso'")
-    println("  - Iso color mode: toggle between resistivity color and depth color")
-    println("  - Export Iso DXF: writes current solid iso-volume + parameter report")
-    println("  - Corner button switches between 'Show Both Panels' and 'Show 3D Only'")
-    println("  - 3D-only scene keeps the current sections/isosurfaces/seismic overlays")
-    println("  - 'Reset View': reset camera")
-
+    _step!("Opening viewer"; done = true)
     screen = display_figure(fig; fullscreen = open_fullscreen)
-    println("\nViewer is open. Close the window to exit.")
+    println("\n  \e[32m✓\e[0m TerraScope is ready. Close the window to exit.\n")
+    print("\e[5 q")   # switch to blinking bar cursor
     wait(screen)
+    print("\e[0 q")   # restore default cursor
 
     return fig, parts
 end

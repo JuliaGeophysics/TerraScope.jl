@@ -79,21 +79,40 @@ function shapefile_segments(shapefile_path::AbstractString; auto_reproject_to_wg
 end
 
 function plot_shapefile_on_3d!(ax, shapefile_path::AbstractString; z_fixed::Real = 0.0, line_color = :black, line_width::Real = 1.3, auto_reproject_to_wgs84::Bool = false, post_transform = (x, y) -> (x, y), xlim = nothing, ylim = nothing)
+    all_x = Float64[]
+    all_y = Float64[]
     count = 0
     for segment in shapefile_segments(shapefile_path; auto_reproject_to_wgs84 = auto_reproject_to_wgs84, post_transform = post_transform, xlim = xlim, ylim = ylim)
-        xs = first.(segment)
-        ys = last.(segment)
-        lines!(ax, xs, ys, fill(Float64(z_fixed), length(segment)); color = line_color, linewidth = line_width)
+        if !isempty(all_x)
+            push!(all_x, NaN)
+            push!(all_y, NaN)
+        end
+        append!(all_x, first.(segment))
+        append!(all_y, last.(segment))
         count += 1
+    end
+    if !isempty(all_x)
+        all_z = [isnan(x) ? NaN : Float64(z_fixed) for x in all_x]
+        lines!(ax, all_x, all_y, all_z; color = line_color, linewidth = line_width)
     end
     return count
 end
 
 function plot_shapefile_on_axis!(ax, shapefile_path::AbstractString; line_color = :black, line_width::Real = 1.3, auto_reproject_to_wgs84::Bool = false, post_transform = (x, y) -> (x, y), xlim = nothing, ylim = nothing)
+    all_x = Float64[]
+    all_y = Float64[]
     count = 0
     for segment in shapefile_segments(shapefile_path; auto_reproject_to_wgs84 = auto_reproject_to_wgs84, post_transform = post_transform, xlim = xlim, ylim = ylim)
-        lines!(ax, first.(segment), last.(segment); color = line_color, linewidth = line_width)
+        if !isempty(all_x)
+            push!(all_x, NaN)
+            push!(all_y, NaN)
+        end
+        append!(all_x, first.(segment))
+        append!(all_y, last.(segment))
         count += 1
+    end
+    if !isempty(all_x)
+        lines!(ax, all_x, all_y; color = line_color, linewidth = line_width)
     end
     return count
 end

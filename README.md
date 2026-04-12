@@ -1,47 +1,43 @@
 # TerraScope.jl
 
-TerraScope.jl is a Makie-based local viewer for MT, density, shapefile, and seismic datasets. The first implementation targets the same interaction model as the MTGeophysics 3D viewer examples while keeping all code isolated to this repository.
-
-## Current Scope
-
-- Load a bundled ModEM resistivity model and data file.
-- Generate and persist a synthetic voxel density model on the MT core mesh.
-- Discover bundled shapefiles and SEG-Y seismic lines in `Data/`.
-- Open a GLMakie viewer with depth slicing, section drawing, seismic curtain overlay, shapefile overlays, and isovolume export.
-
-## Precompilation
-
-After cloning, resolve dependencies and precompile the project so that startup is faster:
-
-```bash
-julia --project=. -e "using Pkg; Pkg.resolve(); Pkg.instantiate(); Pkg.precompile()"
-```
+TerraScope.jl is a [Makie](https://docs.makie.org/)-based local viewer for MT, density, shapefile, and seismic datasets. The first implementation targets the same interaction model as the MTGeophysics 3D viewer examples while keeping all code isolated to this repository.
 
 ## Quick Start
 
-Run the app directly:
-
-```bash
-julia --project=. examples/TerraScope3D.jl
-```
-
-Or use the thin launcher wrapper:
-
-```bash
+```shell
 julia --project=. examples/launch_TerraScope3D.jl
 ```
 
-The package API `launch_viewer()` is still available if you want to launch from Julia code.
+### Example Output
 
-The default viewer looks in `Data/` under this repository.
+```
+  Activating project at `C:\Users\pmishra\OneDrive - Valtori GTK\Documents\Mac\GitHub\TerraScope.jl`
 
-## Data Layout
+  ┌──────────────────────────────────────────────────────┐
 
-Bundled demo assets are expected in `Data/`.
+▄▄▄▄▄▄▄▄▄                       ▄▄▄▄▄▄▄
+▀▀▀███▀▀▀                      █████▀▀▀
+   ███ ▄█▀█▄ ████▄ ████▄  ▀▀█▄  ▀████▄  ▄████ ▄███▄ ████▄ ▄█▀█▄
+   ███ ██▄█▀ ██ ▀▀ ██ ▀▀ ▄█▀██    ▀████ ██    ██ ██ ██ ██ ██▄█▀
+   ███ ▀█▄▄▄ ██    ██    ▀█▄██ ███████▀ ▀████ ▀███▀ ████▀ ▀█▄▄▄
+                                                    ██
+                                                    ▀▀
+  └──────────────────────────────────────────────────────┘
 
-- `.rho`: ModEM model
-- `.dat`: ModEM data file
-- `.shp` plus sidecars: shapefile overlays
-- `.sgy` or `.segy`: 2D seismic line
-- `.vox`: TerraScope synthetic density voxel file
+  Let's look at diverse geophysical models together...
+  Feedback / Issues → pankaj.mishra@gtk.fi
+  Data directory    → C:\Users\pmishra\TerraScope.jl\Data\demo
+
+  › [███░░░░░░░░░░░░░░░░░░░░░░░░░░░]  11%  Loading resistivity model…
+  › [███████░░░░░░░░░░░░░░░░░░░░░░░]  22%  Georeferencing model…
+  › [██████████░░░░░░░░░░░░░░░░░░░░]  33%  Loading density volume…
+  › [█████████████░░░░░░░░░░░░░░░░░]  44%  Loading susceptibility volume…
+  › [█████████████████░░░░░░░░░░░░░]  56%  Loading gravity volume…
+  › [████████████████████░░░░░░░░░░]  67%  Loading magnetic volume…
+  › [███████████████████████░░░░░░░]  78%  Loading seismic section…
+  › [███████████████████████████░░░]  89%  Building 3D scene…
+  ✓ [██████████████████████████████] 100%  Opening viewer
+
+  ✓ TerraScope is ready. Close the window to exit.
+```
 
