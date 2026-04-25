@@ -154,3 +154,54 @@ function load_model_modem(path::AbstractString)
 
     return model
 end
+
+function write_model_modem(outputfile::AbstractString, model::MTModel; rotation::Real = 0.0)
+    return write_model_modem(outputfile, model.dx, model.dy, model.dz, model.A, model.origin; rotation = rotation)
+end
+
+function write_model_modem(outputfile::AbstractString,
+    dx::AbstractVector, dy::AbstractVector, dz::AbstractVector,
+    values::Array{<:Real, 3}, origin::AbstractVector;
+    rotation::Real = 0.0)
+
+    nx, ny, nz = size(values)
+    written_values = copy(Float64.(values))
+    written_values[isnan.(written_values)] .= 1e17
+    written_values .= log.(written_values)
+
+    open(outputfile, "w") do io
+        println(io, "# Written by TerraScope.write_model_modem")
+        println(io, "$nx $ny $nz 0 LOGE")
+
+        for value in dx
+            print(io, "$value ")
+        end
+        println(io)
+        for value in dy
+            print(io, "$value ")
+        end
+        println(io)
+        for value in dz
+            print(io, "$value ")
+        end
+        println(io)
+
+        for k in 1:nz
+            println(io)
+            for j in 1:ny
+                for i in nx:-1:1
+                    @printf(io, "%15.5E", written_values[i, j, k])
+                end
+                println(io)
+            end
+        end
+
+        ox = length(origin) >= 1 ? origin[1] : 0.0
+        oy = length(origin) >= 2 ? origin[2] : 0.0
+        oz = length(origin) >= 3 ? origin[3] : 0.0
+        println(io, "$ox $oy $oz")
+        println(io, "$rotation")
+    end
+
+    return outputfile
+end

@@ -5,6 +5,7 @@
 # across the model with its own slider.
 
 using GLMakie
+GLMakie.activate!()
 using Statistics
 using Dates
 using SegyIO
@@ -12,12 +13,10 @@ using Shapefile
 using GeoInterface
 using Proj
 using FFTW
+using TerraScope: core_indices, edges_from_centers, load_data_modem, load_density_volume, load_model_modem, z_indices_for_max_depth
 
 # -------------------- Input Files --------------------
 # Main resistivity model, ModEM data file, and optional linework overlay.
-include(joinpath(dirname(@__DIR__), "legacy", "mtgeophysics", "Model.jl"))
-include(joinpath(dirname(@__DIR__), "legacy", "mtgeophysics", "Data.jl"))
-include(joinpath(dirname(@__DIR__), "legacy", "mtgeophysics", "PlotModel.jl"))
 
 function _merge_launch_config(base::NamedTuple, override::NamedTuple)
     return (; (name => begin
@@ -44,8 +43,6 @@ DEFAULT_TERRASCOPE_LAUNCH_CONFIG = (
         shapefile_path = joinpath(default_data_root, "gis", "Tnew", "Tnew.shp"),
         density_file = joinpath(default_data_root, "Density3D.vox"),
         susceptibility_file = joinpath(default_data_root, "Susceptibility3D.vox"),
-        gravity_file = joinpath(default_data_root, "synthetic_gravity.vox"),
-        magnetic_file = joinpath(default_data_root, "synthetic_magnetic.vox"),
         seismic_file = joinpath(default_data_root, "fire_updated.sgy"),
     ),
     model = (
@@ -59,8 +56,6 @@ DEFAULT_TERRASCOPE_LAUNCH_CONFIG = (
             resistivity = (1.0, 4.0),
             density = nothing,
             susceptibility = nothing,
-            gravity = nothing,
-            magnetic = nothing,
         ),
     ),
     view = (
@@ -121,8 +116,6 @@ data_file = launch_config.paths.data_file
 shapefile_path = launch_config.paths.shapefile_path
 density_file = launch_config.paths.density_file
 susceptibility_file = launch_config.paths.susceptibility_file
-gravity_file = launch_config.paths.gravity_file
-magnetic_file = launch_config.paths.magnetic_file
 seismic_file = launch_config.paths.seismic_file
 model_name_for_export = splitext(basename(model_file))[1]
 
@@ -166,8 +159,10 @@ annotation_line_width = launch_config.overlay.annotation_line_width
 isosurface_defaults = launch_config.isosurface
 
 # -------------------- Coordinate System --------------------
-# Default target CRS is EPSG:3067. Set selector_show_latlon_ticks=true only if
-# you want geographic tick labels on the lower selector panel.
+# Default target CRS is EPSG:3067. Use a projected CRS for plotting; the viewer
+# assumes metric XY coordinates for sections, scale bars, and overlays. Set
+# selector_show_latlon_ticks=true if you want geographic tick labels on the
+# lower selector panel while keeping the scene itself projected.
 target_crs = launch_config.coordinate.target_crs
 selector_show_latlon_ticks = launch_config.coordinate.selector_show_latlon_ticks
 
@@ -189,224 +184,6 @@ seismic_envelope_range = launch_config.seismic.envelope_range
 seismic_line_color = launch_config.seismic.line_color
 seismic_line_width = launch_config.seismic.line_width
 show_seismic_model_section = launch_config.seismic.show_model_section
-
-function load_density_volume(path::AbstractString)
-    lines = readlines(path)
-    meta = Dict{String, String}()
-    data_start = 1
-    for (idx, line) in enumerate(lines)
-        stripped = strip(line)
-        isempty(stripped) && continue
-        if startswith(stripped, "slice=")
-            data_start = idx
-            break
-        elseif startswith(stripped, "#")
-            continue
-        elseif occursin('=', stripped)
-            key, value = split(stripped, '='; limit = 2)
-            meta[strip(key)] = strip(value)
-        end
-    end
-
-    dims = parse.(Int, split(meta["dims"]))
-    x = parse.(Float64, split(meta["x"]))
-    y = parse.(Float64, split(meta["y"]))
-    z = parse.(Float64, split(meta["z"]))
-    values = zeros(Float64, dims[1], dims[2], dims[3])
-
-    current_k = 0
-    current_j = 0
-    for line in lines[data_start:end]
-        stripped = strip(line)
-        isempty(stripped) && continue
-        if startswith(stripped, "slice=")
-            current_k = parse(Int, split(stripped, '='; limit = 2)[2])
-            current_j = 0
-            continue
-        end
-        current_j += 1
-        values[:, current_j, current_k] = parse.(Float64, split(stripped))
-    end
-
-    return (
-        name = get(meta, "name", "Density"),
-        kind = Symbol(get(meta, "kind", "density")),
-        values = values,
-        x = x,
-        y = y,
-        z = z,
-        units = get(meta, "units", "kg/m^3"),
-    )
-end
-
-function save_voxel_volume(path::AbstractString, volume)
-    mkpath(dirname(path))
-    open(path, "w") do io
-        println(io, "# TerraScope voxel volume")
-        println(io, "name=" * String(volume.name))
-        println(io, "kind=" * String(volume.kind))
-        println(io, "units=" * String(volume.units))
-        println(io, "dims=$(length(volume.x)) $(length(volume.y)) $(length(volume.z))")
-        println(io, "x=" * join(volume.x, ' '))
-        println(io, "y=" * join(volume.y, ' '))
-        println(io, "z=" * join(volume.z, ' '))
-        for k in 1:length(volume.z)
-            println(io, "slice=$k")
-            for j in 1:length(volume.y)
-                println(io, join(volume.values[:, j, k], ' '))
-            end
-        end
-    end
-    return path
-end
-
-function _gaussian3(x::Real, y::Real, z::Real, x0::Real, y0::Real, z0::Real, sx::Real, sy::Real, sz::Real)
-    return exp(-0.5 * (((x - x0) / sx)^2 + ((y - y0) / sy)^2 + ((z - z0) / sz)^2))
-end
-
-function generate_synthetic_density_model(model; pad_tol::Real = 0.2, max_depth::Union{Nothing, Real} = nothing)
-    ix = core_indices(model.cx; tol = pad_tol)
-    iy = core_indices(model.cy; tol = pad_tol)
-    kz = isnothing(max_depth) ? (1:length(model.cz)) : z_indices_for_max_depth(model.cz, float(max_depth))
-    x = model.cx[ix]
-    y = model.cy[iy]
-    z = -model.cz[kz]
-    nx, ny, nz = length(x), length(y), length(z)
-
-    values = fill(2695.0, nx, ny, nz)
-    xmid = 0.5 * (minimum(x) + maximum(x))
-    ymid = 0.5 * (minimum(y) + maximum(y))
-    xspan = max(maximum(x) - minimum(x), 1.0)
-    yspan = max(maximum(y) - minimum(y), 1.0)
-    zmax = max(maximum(-z), 1.0)
-
-    for i in 1:nx, j in 1:ny, k in 1:nz
-        depth = -z[k]
-        xn = (x[i] - xmid) / xspan
-        yn = (y[j] - ymid) / yspan
-        zn = depth / zmax
-
-        shield_gradient = 55.0 * (0.45 - yn) + 35.0 * zn
-        greenstone_belt = 220.0 * _gaussian3(xn, yn, zn, 0.18, -0.12, 0.24, 0.11, 0.08, 0.10)
-        lapland_belt = 145.0 * _gaussian3(xn, yn, zn, -0.16, 0.22, 0.30, 0.16, 0.09, 0.12)
-        rapakivi_granite = -165.0 * _gaussian3(xn, yn, zn, 0.24, 0.10, 0.18, 0.13, 0.11, 0.09)
-        sedimentary_cover = -85.0 * _gaussian3(xn, yn, zn, -0.08, -0.22, 0.10, 0.24, 0.12, 0.07)
-        crustal_root = 135.0 * _gaussian3(xn, yn, zn, -0.04, 0.02, 0.58, 0.28, 0.20, 0.16)
-        mafic_intrusion = 175.0 * _gaussian3(xn, yn, zn, 0.04, 0.04, 0.42, 0.08, 0.07, 0.10)
-        basin_rolloff = -40.0 * max(zn - 0.62, 0.0)
-
-        values[i, j, k] += shield_gradient + greenstone_belt + lapland_belt + rapakivi_granite + sedimentary_cover + crustal_root + mafic_intrusion + basin_rolloff
-    end
-
-    values .= clamp.(values, 2480.0, 3275.0)
-    return (
-        name = "Synthetic Density",
-        kind = :density,
-        values = values,
-        x = x,
-        y = y,
-        z = z,
-        units = "kg/m^3",
-    )
-end
-
-function generate_synthetic_susceptibility_model(model; pad_tol::Real = 0.2, max_depth::Union{Nothing, Real} = nothing)
-    ix = core_indices(model.cx; tol = pad_tol)
-    iy = core_indices(model.cy; tol = pad_tol)
-    kz = isnothing(max_depth) ? (1:length(model.cz)) : z_indices_for_max_depth(model.cz, float(max_depth))
-    x = model.cx[ix]
-    y = model.cy[iy]
-    z = -model.cz[kz]
-    nx, ny, nz = length(x), length(y), length(z)
-    values = fill(0.0020, nx, ny, nz)
-
-    xmid = 0.5 * (minimum(x) + maximum(x))
-    ymid = 0.5 * (minimum(y) + maximum(y))
-    xspan = max(maximum(x) - minimum(x), 1.0)
-    yspan = max(maximum(y) - minimum(y), 1.0)
-    zmax = max(maximum(-z), 1.0)
-
-    for i in 1:nx, j in 1:ny, k in 1:nz
-        depth = -z[k]
-        xn = (x[i] - xmid) / xspan
-        yn = (y[j] - ymid) / yspan
-        zn = depth / zmax
-
-        greenstone_high = 0.060 * _gaussian3(xn, yn, zn, 0.16, -0.10, 0.22, 0.10, 0.07, 0.08)
-        lapland_arc = 0.036 * _gaussian3(xn, yn, zn, -0.18, 0.20, 0.28, 0.18, 0.08, 0.10)
-        mafic_root = 0.028 * _gaussian3(xn, yn, zn, -0.02, 0.02, 0.52, 0.24, 0.16, 0.14)
-        rapakivi_low = -0.0065 * _gaussian3(xn, yn, zn, 0.26, 0.10, 0.18, 0.14, 0.11, 0.09)
-        basin_low = -0.0032 * _gaussian3(xn, yn, zn, -0.10, -0.24, 0.12, 0.22, 0.12, 0.07)
-        regional_decay = -0.0012 * zn + 0.0020 * max(0.15 - yn, 0.0)
-
-        values[i, j, k] += greenstone_high + lapland_arc + mafic_root + rapakivi_low + basin_low + regional_decay
-    end
-
-    values .= clamp.(values, 1e-4, 0.095)
-    return (
-        name = "Synthetic Susceptibility",
-        kind = :susceptibility,
-        values = values,
-        x = x,
-        y = y,
-        z = z,
-        units = "SI",
-    )
-end
-
-function generate_synthetic_gravity_model(density_model)
-    x = density_model.x
-    y = density_model.y
-    z = density_model.z
-    nx, ny, nz = size(density_model.values)
-    values = zeros(Float64, nx, ny, nz)
-    zmax = max(maximum(-z), 1.0)
-
-    for k in 1:nz
-        depth = -z[k]
-        depth_weight = exp(-depth / (0.32 * zmax))
-        values[:, :, k] .= 6.0 .+ 0.085 .* (density_model.values[:, :, k] .- 2695.0) .* depth_weight
-    end
-
-    values .+= 4.0 .* reshape(range(-1.0, 1.0; length = nx), nx, 1, 1)
-    values .= clamp.(values, -18.0, 26.0)
-    return (
-        name = "Synthetic Gravity",
-        kind = :gravity,
-        values = values,
-        x = x,
-        y = y,
-        z = z,
-        units = "mGal",
-    )
-end
-
-function generate_synthetic_magnetic_model(susceptibility_model)
-    x = susceptibility_model.x
-    y = susceptibility_model.y
-    z = susceptibility_model.z
-    nx, ny, nz = size(susceptibility_model.values)
-    values = zeros(Float64, nx, ny, nz)
-    zmax = max(maximum(-z), 1.0)
-
-    for k in 1:nz
-        depth = -z[k]
-        depth_weight = exp(-depth / (0.24 * zmax))
-        values[:, :, k] .= 80.0 .+ 8400.0 .* susceptibility_model.values[:, :, k] .* depth_weight
-    end
-
-    values .+= 70.0 .* reshape(sin.(range(-pi, pi; length = ny)), 1, ny, 1)
-    values .= clamp.(values, 40.0, 880.0)
-    return (
-        name = "Synthetic Magnetic",
-        kind = :magnetic,
-        values = values,
-        x = x,
-        y = y,
-        z = z,
-        units = "nT",
-    )
-end
 
 function _compute_display_range(V::AbstractArray)
     vals = V[isfinite.(V)]
@@ -438,8 +215,8 @@ function _resolve_display_range(V::AbstractArray, range_override)
 end
 
 _volume_colormap(kind::Symbol, resistivity_cmap) = resistivity_cmap
-_volume_colorbar_label(kind::Symbol, logscale::Bool) = kind == :density ? "Density (g/cc)" : (kind == :susceptibility ? "Susceptibility (SI)" : (kind == :gravity ? "Gravity (mGal)" : (kind == :magnetic ? "Magnetic (nT)" : (logscale ? "log₁₀ ρ (Ω·m)" : "ρ (Ω·m)"))))
-_volume_units_label(kind::Symbol) = kind == :density ? "g/cc" : (kind == :susceptibility ? "SI" : (kind == :gravity ? "mGal" : (kind == :magnetic ? "nT" : "Ω·m")))
+_volume_colorbar_label(kind::Symbol, logscale::Bool) = kind == :density ? "Density (g/cc)" : (kind == :susceptibility ? "Susceptibility (SI)" : (logscale ? "log₁₀ ρ (Ω·m)" : "ρ (Ω·m)"))
+_volume_units_label(kind::Symbol) = kind == :density ? "g/cc" : (kind == :susceptibility ? "SI" : "Ω·m")
 _isosurface_depth_colormap(kind::Symbol) = kind == :density ? [:mintcream, :mediumseagreen, :darkslategray4] :
                                            (kind == :susceptibility ? [:cornsilk, :orange, :orangered4] :
                                             [:aliceblue, :royalblue1, :navy])
@@ -532,7 +309,16 @@ function _resolve_target_xy_to_wgs84_transform(target_crs::AbstractString)
     end
 end
 
+function _validate_target_crs(target_crs::AbstractString)
+    crs = uppercase(strip(target_crs))
+    if crs == "EPSG:4326"
+        error("target_crs=EPSG:4326 is not supported for plotting. TerraScope assumes projected metric XY coordinates for scale bars, section distances, and sampling. Keep target_crs projected, such as EPSG:3067, and use selector_show_latlon_ticks=true if you want WGS84 labels.")
+    end
+    return target_crs
+end
+
 function model_xy_to_target_crs_centers(M, d, target_crs::AbstractString)
+    _validate_target_crs(target_crs)
     lat_centers, lon_centers, lat0, lon0, shiftlat, shiftlon = model_xy_to_latlon_centers(M, d)
     lat_ref = mean(lat_centers)
     lon_ref = mean(lon_centers)
@@ -670,16 +456,23 @@ function _tetra_isotriangles(points::NTuple{4, NTuple{3, Float64}}, vals::NTuple
 end
 
 function extract_isosurface_triangles(xv::AbstractVector{<:Real}, yv::AbstractVector{<:Real}, zv::AbstractVector{<:Real},
-    V::Array{<:Real, 3}, iso::Real; stride::Int = 1)
+    V::Array{<:Real, 3}, iso::Real; stride::Int = 1, depth_start_m::Real = 0.0, depth_end_m::Real = Inf)
     nx, ny, nz = size(V)
     if nx < 2 || ny < 2 || nz < 2
         return NTuple{3, NTuple{3, Float64}}[]
     end
 
     step = max(1, stride)
+    d0 = max(0.0, min(Float64(depth_start_m), Float64(depth_end_m)))
+    d1 = max(0.0, max(Float64(depth_start_m), Float64(depth_end_m)))
     tris = NTuple{3, NTuple{3, Float64}}[]
 
     for i in 1:step:(nx - 1), j in 1:step:(ny - 1), k in 1:step:(nz - 1)
+        depth_mid = -0.5 * (Float64(zv[k]) + Float64(zv[k + 1]))
+        if depth_mid < d0 || depth_mid > d1
+            continue
+        end
+
         p = (
             (Float64(xv[i]),     Float64(yv[j]),     Float64(zv[k])),
             (Float64(xv[i + 1]), Float64(yv[j]),     Float64(zv[k])),
@@ -702,6 +495,8 @@ function extract_isosurface_triangles(xv::AbstractVector{<:Real}, yv::AbstractVe
             Float64(V[i + 1, j + 1, k + 1]),
         )
 
+        all(isfinite, s) || continue
+
         smin = minimum(s)
         smax = maximum(s)
         if Float64(iso) < smin || Float64(iso) > smax
@@ -718,6 +513,51 @@ function extract_isosurface_triangles(xv::AbstractVector{<:Real}, yv::AbstractVe
     return tris
 end
 
+function _padded_axis(vals::AbstractVector{<:Real})
+    n = length(vals)
+    n == 0 && return Float64[]
+    n == 1 && return [Float64(vals[1]) - 1.0, Float64(vals[1]), Float64(vals[1]) + 1.0]
+    first_step = Float64(vals[2]) - Float64(vals[1])
+    last_step = Float64(vals[end]) - Float64(vals[end - 1])
+    return vcat(Float64(vals[1]) - first_step, Float64.(vals), Float64(vals[end]) + last_step)
+end
+
+function build_range_isosurface_triangles(xv::AbstractVector{<:Real}, yv::AbstractVector{<:Real}, zv::AbstractVector{<:Real},
+    V::Array{<:Real, 3}, vmin::Real, vmax::Real, dstart_m::Real, dend_m::Real; stride::Int = 1)
+    finite_values = V[isfinite.(V)]
+    isempty(finite_values) && return NTuple{3, NTuple{3, Float64}}[], 0, Float64[]
+
+    lo, hi = _sanitize_iso_range(vmin, vmax, minimum(finite_values), maximum(finite_values))
+    d0 = max(0.0, min(Float64(dstart_m), Float64(dend_m)))
+    d1 = max(0.0, max(Float64(dstart_m), Float64(dend_m)))
+    value_scale = max(0.5 * abs(hi - lo), 1e-9 * max(abs(lo), abs(hi), 1.0))
+    depth_scale = max(0.5 * abs(d1 - d0), 1.0)
+
+    nx, ny, nz = size(V)
+    score = fill(-1.0, nx, ny, nz)
+    selected_samples = 0
+    for i in 1:nx, j in 1:ny, k in 1:nz
+        value = Float64(V[i, j, k])
+        isfinite(value) || continue
+        depth = -Float64(zv[k])
+        value_score = min((value - lo) / value_scale, (hi - value) / value_scale)
+        depth_score = min((depth - d0) / depth_scale, (d1 - depth) / depth_scale)
+        score[i, j, k] = min(value_score, depth_score)
+        score[i, j, k] >= 0.0 && (selected_samples += 1)
+    end
+
+    selected_samples == 0 && return NTuple{3, NTuple{3, Float64}}[], 0, Float64[lo, hi]
+
+    padded_score = fill(-1.0, nx + 2, ny + 2, nz + 2)
+    padded_score[2:(nx + 1), 2:(ny + 1), 2:(nz + 1)] .= score
+    tris = extract_isosurface_triangles(_padded_axis(xv), _padded_axis(yv), _padded_axis(zv), padded_score, 0.0;
+        stride = max(1, stride),
+        depth_start_m = 0.0,
+        depth_end_m = Inf)
+
+    return tris, selected_samples, Float64[lo, hi]
+end
+
 function _triangles_to_vertices_faces(tris::Vector{NTuple{3, NTuple{3, Float64}}})
     vertices = GLMakie.Point3f[]
     faces = GLMakie.TriangleFace{Int32}[]
@@ -729,6 +569,65 @@ function _triangles_to_vertices_faces(tris::Vector{NTuple{3, NTuple{3, Float64}}
         push!(faces, GLMakie.TriangleFace(Int32(base), Int32(base + 1), Int32(base + 2)))
     end
     return vertices, faces
+end
+
+function _bracket_index_and_weight_monotonic(vals::AbstractVector{<:Real}, query::Real)
+    n = length(vals)
+    n <= 1 && return 1, 1, 0.0
+    ascending = vals[1] <= vals[end]
+
+    if ascending
+        query <= vals[1] && return 1, 2, 0.0
+        query >= vals[end] && return n - 1, n, 1.0
+    else
+        query >= vals[1] && return 1, 2, 0.0
+        query <= vals[end] && return n - 1, n, 1.0
+    end
+
+    lo = 1
+    hi = n
+    while lo < hi
+        mid = (lo + hi) >>> 1
+        if ascending ? vals[mid] < query : vals[mid] > query
+            lo = mid + 1
+        else
+            hi = mid
+        end
+    end
+
+    i1 = clamp(lo, 2, n)
+    i0 = i1 - 1
+    v0 = Float64(vals[i0])
+    v1 = Float64(vals[i1])
+    w = v0 == v1 ? 0.0 : (Float64(query) - v0) / (v1 - v0)
+    return i0, i1, clamp(w, 0.0, 1.0)
+end
+
+function _sample_volume_at_point(vol, point, fallback::Real)
+    ix0, ix1, wx = _bracket_index_and_weight_monotonic(vol.x, Float64(point[1]))
+    iy0, iy1, wy = _bracket_index_and_weight_monotonic(vol.y, Float64(point[2]))
+    iz0, iz1, wz = _bracket_index_and_weight_monotonic(vol.z, Float64(point[3]))
+
+    v000 = Float64(vol.values[ix0, iy0, iz0])
+    v100 = Float64(vol.values[ix1, iy0, iz0])
+    v010 = Float64(vol.values[ix0, iy1, iz0])
+    v110 = Float64(vol.values[ix1, iy1, iz0])
+    v001 = Float64(vol.values[ix0, iy0, iz1])
+    v101 = Float64(vol.values[ix1, iy0, iz1])
+    v011 = Float64(vol.values[ix0, iy1, iz1])
+    v111 = Float64(vol.values[ix1, iy1, iz1])
+
+    if !all(isfinite, (v000, v100, v010, v110, v001, v101, v011, v111))
+        return Float64(fallback)
+    end
+
+    v00 = (1.0 - wx) * v000 + wx * v100
+    v10 = (1.0 - wx) * v010 + wx * v110
+    v01 = (1.0 - wx) * v001 + wx * v101
+    v11 = (1.0 - wx) * v011 + wx * v111
+    v0 = (1.0 - wy) * v00 + wy * v10
+    v1 = (1.0 - wy) * v01 + wy * v11
+    return (1.0 - wz) * v0 + wz * v1
 end
 
 function _draw_isosurface_mesh!(target_ax, verts, faces, vol; color_by_depth::Bool, depth_start_m::Real, depth_end_m::Real, alpha_val::Real, vmin_internal::Real, vmax_internal::Real)
@@ -743,71 +642,16 @@ function _draw_isosurface_mesh!(target_ax, verts, faces, vol; color_by_depth::Bo
             alpha = alpha_clamped,
             shading = FastShading)
     else
-        property_mid = Float32(0.5 * (Float64(vmin_internal) + Float64(vmax_internal)))
+        property_mid = 0.5 * (Float64(vmin_internal) + Float64(vmax_internal))
+        color_data = Float32[_sample_volume_at_point(vol, v, property_mid) for v in verts]
         mesh!(target_ax, verts, faces;
-            color = fill(property_mid, length(verts)),
+            color = color_data,
             colormap = vol.cmap,
             colorrange = (vol.cmin, vol.cmax),
             transparency = true,
             alpha = alpha_clamped,
             shading = FastShading)
     end
-end
-
-function _cube_triangles(x0::Float64, x1::Float64, y0::Float64, y1::Float64, z0::Float64, z1::Float64)
-    p000 = (x0, y0, z0)
-    p100 = (x1, y0, z0)
-    p010 = (x0, y1, z0)
-    p110 = (x1, y1, z0)
-    p001 = (x0, y0, z1)
-    p101 = (x1, y0, z1)
-    p011 = (x0, y1, z1)
-    p111 = (x1, y1, z1)
-
-    return NTuple{3, NTuple{3, Float64}}[
-        (p000, p100, p110), (p000, p110, p010),
-        (p001, p111, p101), (p001, p011, p111),
-        (p000, p001, p101), (p000, p101, p100),
-        (p010, p110, p111), (p010, p111, p011),
-        (p000, p010, p011), (p000, p011, p001),
-        (p100, p101, p111), (p100, p111, p110),
-    ]
-end
-
-function build_range_volume_triangles(xv::AbstractVector{<:Real}, yv::AbstractVector{<:Real}, zv::AbstractVector{<:Real},
-    V::Array{<:Real, 3}, vmin::Real, vmax::Real, dstart_m::Real, dend_m::Real; stride::Int = 1)
-    nx, ny, nz = size(V)
-    if nx == 0 || ny == 0 || nz == 0
-        return NTuple{3, NTuple{3, Float64}}[], 0
-    end
-
-    x_edges = edges_from_centers(xv)
-    y_edges = edges_from_centers(yv)
-    z_edges = edges_from_centers(zv)
-
-    lo, hi = _sanitize_iso_range(vmin, vmax, minimum(V), maximum(V))
-    d0 = max(0.0, min(Float64(dstart_m), Float64(dend_m)))
-    d1 = max(0.0, max(Float64(dstart_m), Float64(dend_m)))
-
-    step = max(1, stride)
-    tris = NTuple{3, NTuple{3, Float64}}[]
-    selected_cells = 0
-
-    for i in 1:step:nx, j in 1:step:ny, k in 1:step:nz
-        val = Float64(V[i, j, k])
-        depth_m = -Float64(zv[k])
-        if !(val >= lo && val <= hi && depth_m >= d0 && depth_m <= d1)
-            continue
-        end
-
-        x0, x1 = Float64(x_edges[i]), Float64(x_edges[i + 1])
-        y0, y1 = Float64(y_edges[j]), Float64(y_edges[j + 1])
-        z0, z1 = Float64(z_edges[k]), Float64(z_edges[k + 1])
-        append!(tris, _cube_triangles(x0, x1, y0, y1, z0, z1))
-        selected_cells += 1
-    end
-
-    return tris, selected_cells
 end
 
 function _write_dxf_3dface!(io, p1::NTuple{3, Float64}, p2::NTuple{3, Float64}, p3::NTuple{3, Float64}; layer::AbstractString = "0")
@@ -1494,7 +1338,9 @@ function display_figure(fig; fullscreen::Bool = true)
             @warn "Fullscreen display failed; falling back to normal window." exception=(err, catch_backtrace())
         end
     end
-    return display(fig)
+    screen = GLMakie.Screen(; focus_on_show = true)
+    display(screen, fig)
+    return screen
 end
 
 function _nice_tick_values(vmin::Real, vmax::Real; target_count::Int = 5)
@@ -1579,8 +1425,6 @@ function modem_3d_viewer_crosssections(
     M;
     density_model = nothing,
     susceptibility_model = nothing,
-    gravity_model = nothing,
-    magnetic_model = nothing,
     log10scale::Bool = true,
     cmap = :Spectral,
     figsize = (1760, 960),
@@ -1591,8 +1435,6 @@ function modem_3d_viewer_crosssections(
     volume_display_ranges = (;
         density = nothing,
         susceptibility = nothing,
-        gravity = nothing,
-        magnetic = nothing,
     ),
     overlay_transform = (x, y) -> (x, y),
     north_axis::Symbol = :y,
@@ -1692,48 +1534,6 @@ function modem_3d_viewer_crosssections(
             cmax = s_cmax,
             cmap = _volume_colormap(:susceptibility, cmap),
             label = _volume_colorbar_label(:susceptibility, false),
-            logscale = false,
-        )
-    end
-
-    gravity_volume = if gravity_model === nothing
-        nothing
-    else
-        g_kz = isnothing(max_depth) ? (1:length(gravity_model.cz)) : z_indices_for_max_depth(gravity_model.cz, float(max_depth))
-        g_vals = gravity_model.A[:, :, g_kz]
-        g_cmin, g_cmax = _resolve_display_range(g_vals, get(volume_display_ranges, :gravity, nothing))
-        (
-            name = getproperty(gravity_model, :name),
-            kind = :gravity,
-            x = gravity_model.cx,
-            y = gravity_model.cy,
-            z = -gravity_model.cz[g_kz],
-            values = g_vals,
-            cmin = g_cmin,
-            cmax = g_cmax,
-            cmap = _volume_colormap(:gravity, cmap),
-            label = _volume_colorbar_label(:gravity, false),
-            logscale = false,
-        )
-    end
-
-    magnetic_volume = if magnetic_model === nothing
-        nothing
-    else
-        m_kz = isnothing(max_depth) ? (1:length(magnetic_model.cz)) : z_indices_for_max_depth(magnetic_model.cz, float(max_depth))
-        m_vals = magnetic_model.A[:, :, m_kz]
-        m_cmin, m_cmax = _resolve_display_range(m_vals, get(volume_display_ranges, :magnetic, nothing))
-        (
-            name = getproperty(magnetic_model, :name),
-            kind = :magnetic,
-            x = magnetic_model.cx,
-            y = magnetic_model.cy,
-            z = -magnetic_model.cz[m_kz],
-            values = m_vals,
-            cmin = m_cmin,
-            cmax = m_cmax,
-            cmap = _volume_colormap(:magnetic, cmap),
-            label = _volume_colorbar_label(:magnetic, false),
             logscale = false,
         )
     end
@@ -1885,21 +1685,8 @@ function modem_3d_viewer_crosssections(
         xtick_vals = _nice_tick_values(minimum(vol.x), maximum(vol.x); target_count = 4)
         ytick_vals = _nice_tick_values(minimum(vol.y), maximum(vol.y); target_count = 4)
 
-        if selector_show_latlon_ticks && xy_to_latlon !== nothing
-            yref = mean(vol.y)
-            xref = mean(vol.x)
-            selector_ax.xticks = (xtick_vals, [begin
-                lon, _ = xy_to_latlon(Float64(v), yref)
-                string(round(lon, digits = 2))
-            end for v in xtick_vals])
-            selector_ax.yticks = (ytick_vals, [begin
-                _, lat = xy_to_latlon(xref, Float64(v))
-                string(round(lat, digits = 2))
-            end for v in ytick_vals])
-        else
-            selector_ax.xticks = (xtick_vals, [_format_tick_value(v) for v in xtick_vals])
-            selector_ax.yticks = (ytick_vals, [_format_tick_value(v) for v in ytick_vals])
-        end
+        selector_ax.xticks = xtick_vals
+        selector_ax.yticks = ytick_vals
     end
 
     if selector_show_latlon_ticks && xy_to_latlon !== nothing
@@ -1918,6 +1705,8 @@ function modem_3d_viewer_crosssections(
     else
         selector_ax.xlabel = "Easting (m)"
         selector_ax.ylabel = "Northing (m)"
+        selector_ax.xtickformat = vals -> [_format_tick_value(v) for v in vals]
+        selector_ax.ytickformat = vals -> [_format_tick_value(v) for v in vals]
     end
 
     x_edges = edges_from_centers(current_volume().x)
@@ -2209,7 +1998,7 @@ function modem_3d_viewer_crosssections(
         clear_isosurface_plots!(vol.kind)
 
         vmin_disp, vmax_disp, vmin_internal, vmax_internal, dstart_m, dend_m, alpha_val = parse_isosurface_controls!()
-        tris, selected_cells = build_range_volume_triangles(vol.x, vol.y, vol.z, vol.values, vmin_internal, vmax_internal, dstart_m, dend_m;
+        tris, selected_samples, iso_levels = build_range_isosurface_triangles(vol.x, vol.y, vol.z, vol.values, vmin_internal, vmax_internal, dstart_m, dend_m;
             stride = max(1, isosurface_defaults.stride))
 
         if isempty(tris)
@@ -2226,7 +2015,8 @@ function modem_3d_viewer_crosssections(
                 "color_by_depth" => iso_color_by_depth[],
                 "stride" => max(1, isosurface_defaults.stride),
                 "alpha" => alpha_val,
-                "selected_cells" => 0,
+                "selected_samples" => 0,
+                "iso_levels" => iso_levels,
                 "triangles" => 0,
             )
         else
@@ -2253,10 +2043,11 @@ function modem_3d_viewer_crosssections(
                 "color_by_depth" => iso_color_by_depth[],
                 "stride" => max(1, isosurface_defaults.stride),
                 "alpha" => alpha_val,
-                "selected_cells" => selected_cells,
+                "selected_samples" => selected_samples,
+                "iso_levels" => iso_levels,
                 "triangles" => length(tris),
             )
-            export_status[] = "Isosurface $(vol.name) updated: $(round(vmin_disp, digits=3))–$(round(vmax_disp, digits=3)) $(_volume_units_label(vol.kind)), opacity=$(round(alpha_val, digits=2)), cells=$(selected_cells), faces=$(length(tris))"
+            export_status[] = "Smooth isosurface $(vol.name) updated: $(round(vmin_disp, digits=3))–$(round(vmax_disp, digits=3)) $(_volume_units_label(vol.kind)), opacity=$(round(alpha_val, digits=2)), samples=$(selected_samples), faces=$(length(tris))"
         end
     end
 
@@ -2834,12 +2625,14 @@ function modem_3d_viewer_crosssections(
         n = section_count()
         n == 0 && return
         set_active_section!(max(1, active_section[] - 1))
+        update_axis_info!()
     end
 
     on(btn_next_sec.clicks) do _
         n = section_count()
         n == 0 && return
         set_active_section!(min(n, active_section[] + 1))
+        update_axis_info!()
     end
 
     on(btn_undo.clicks) do _
@@ -2972,7 +2765,7 @@ function main()
     println()
 
     # ── Progress helpers ─────────────────────────────────────────────────
-    _total_steps = 9
+    _total_steps = 8
     _current_step = Ref(0)
 
     function _step!(label::AbstractString; done::Bool = false)
@@ -2985,6 +2778,7 @@ function main()
         print("  $icon \e[90m[\e[0m$bar\e[90m]\e[0m $pct%%  $label")
         done || print("…")
         println()
+        flush(stdout)
     end
 
     # ── Load data ────────────────────────────────────────────────────────
@@ -3062,26 +2856,6 @@ function main()
         end
     end
 
-    gravity_target = nothing
-    _step!("Loading gravity volume")
-    if isfile(gravity_file)
-        try
-            gravity_target = load_project_crs_volume(gravity_file)
-        catch err
-            @warn "Failed to load gravity voxel file; proceeding without gravity volume." exception=(err, catch_backtrace())
-        end
-    end
-
-    magnetic_target = nothing
-    _step!("Loading magnetic volume")
-    if isfile(magnetic_file)
-        try
-            magnetic_target = load_project_crs_volume(magnetic_file)
-        catch err
-            @warn "Failed to load magnetic voxel file; proceeding without magnetic volume." exception=(err, catch_backtrace())
-        end
-    end
-
     seismic_curtain = nothing
     resolved_seismic_display_mode = _resolve_seismic_display_mode(seismic_display_mode)
     _step!("Loading seismic section")
@@ -3107,8 +2881,6 @@ function main()
     fig, parts = modem_3d_viewer_crosssections(M_target;
         density_model = density_target,
         susceptibility_model = susceptibility_target,
-        gravity_model = gravity_target,
-        magnetic_model = magnetic_target,
         log10scale = log10_scale,
         cmap = colormap,
         withPadding = show_padding,
@@ -3118,8 +2890,6 @@ function main()
         volume_display_ranges = (
             density = display_ranges.density,
             susceptibility = display_ranges.susceptibility,
-            gravity = display_ranges.gravity,
-            magnetic = display_ranges.magnetic,
         ),
         overlay_transform = overlay_transform,
         north_axis = :y,
@@ -3131,9 +2901,11 @@ function main()
         scene_only_default = show_only_3d_scene
     )
 
-    _step!("Opening viewer"; done = true)
+    _step!("Opening viewer")
     screen = display_figure(fig; fullscreen = open_fullscreen)
+    _step!("Viewer ready"; done = true)
     println("\n  \e[32m✓\e[0m TerraScope is ready. Close the window to exit.\n")
+    flush(stdout)
     print("\e[5 q")   # switch to blinking bar cursor
     wait(screen)
     print("\e[0 q")   # restore default cursor

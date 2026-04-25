@@ -2,6 +2,7 @@
 /.DS_Store
 
 # Generated exports
+/build/
 /exports/
 /examples/*_Export2D_*/
 /examples/*_Export3D_*/

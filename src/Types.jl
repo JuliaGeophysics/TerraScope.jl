@@ -23,6 +23,8 @@ mutable struct MTModel
     niter::String
 end
 
+const ModEMModel = MTModel
+
 mutable struct MTData
     T::Vector{Float64}
     f::Vector{Float64}
@@ -49,6 +51,8 @@ mutable struct MTData
     niter::String
     name::String
 end
+
+const ModEMData = MTData
 
 struct ScalarVolume
     name::String

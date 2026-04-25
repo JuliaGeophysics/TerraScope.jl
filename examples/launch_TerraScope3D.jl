@@ -1,6 +1,10 @@
 using Pkg
 Pkg.activate(joinpath(@__DIR__, ".."))
 
+println("TerraScope launcher started.")
+println("Preparing packages and viewer code. Startup progress will continue below...")
+flush(stdout)
+
 demo_root = joinpath(dirname(@__DIR__), "Data", "demo")                     # Root folder for the bundled demo assets; point elsewhere to launch a different project.
 
 const TERRASCOPE_LAUNCH_CONFIG = (
@@ -11,8 +15,6 @@ const TERRASCOPE_LAUNCH_CONFIG = (
 		shapefile_path = joinpath(demo_root, "gis", "Tnew", "Tnew.shp"), 	# Optional GIS linework draped on top of the model.
 		density_file = joinpath(demo_root, "Density3D.vox"),                # Optional density voxel volume.
 		susceptibility_file = joinpath(demo_root, "Susceptibility3D.vox"),  # Optional susceptibility voxel volume.
-		gravity_file = joinpath(demo_root, "synthetic_gravity.vox"),        # Optional gravity voxel volume.
-		magnetic_file = joinpath(demo_root, "synthetic_magnetic.vox"),      # Optional magnetic voxel volume.
 		seismic_file = joinpath(demo_root, "fire_updated.sgy"),             # Optional SEG-Y line used for seismic section and model drape.
 	),
 	model = (                                                               # Controls for the 3D resistivity/voxel rendering and manual sections.
@@ -26,8 +28,6 @@ const TERRASCOPE_LAUNCH_CONFIG = (
 			resistivity = (1.0, 4.0),                                         # For `log10_scale = true`, these are log10(ohm.m) values.
 			density = nothing,                                                # Auto-estimate density color range.
 			susceptibility = nothing,                                         # Auto-estimate susceptibility color range.
-			gravity = nothing,                                                # Auto-estimate gravity color range.
-			magnetic = nothing,                                               # Auto-estimate magnetic color range.
 		),
 	),
 	view = (                                                                # Startup layout and camera behaviour.
@@ -39,15 +39,15 @@ const TERRASCOPE_LAUNCH_CONFIG = (
 		default_view_scale = 1.12,                                           # Default camera zoom/scale at startup.
 	),
 	coordinate = (                                                          # Coordinate-system controls for the 3D scene and bottom selector map.
-		target_crs = "EPSG:3067",                                           # Target projected CRS used for plotting.
-		selector_show_latlon_ticks = false,                                 # `true` uses lat/lon labels below; `false` keeps Easting/Northing labels.
+		target_crs = "EPSG:3067",                                           # Target projected CRS used for plotting; do not set this to `EPSG:4326` because the viewer assumes metric XY coordinates.
+		selector_show_latlon_ticks = true,                                 # `true` shows WGS84 lat/lon labels on the selector while keeping the scene itself in a projected CRS.
 	),
 	seismic = (                                                            # SEG-Y loading and rendering options.
 		show = true,                                                        # Master on/off switch for loading any seismic product at startup.
 		display_mode = :envelope,                                           # `:original` uses signed amplitudes; `:envelope` uses the trace envelope.
 		trace_xy = :source,                                                 # Which SEG-Y coordinates to use for map location; `:source` is common.
-		max_traces = 2320,                                                  # Downsampling cap for traces to keep large SEG-Y files interactive.
-		max_samples = 2000,                                                 # Downsampling cap for samples to keep large SEG-Y files interactive.
+		max_traces = 1400,                                                  # Downsampling cap for traces to keep large SEG-Y files interactive.
+		max_samples = 1200,                                                 # Downsampling cap for samples to keep large SEG-Y files interactive.
 		sample_spacing_m = 12.5,                                            # Approximate distance between resampled seismic traces in meters.
 		clip_quantile = 0.995,                                              # Clips very large amplitudes for a cleaner seismic image.
 		show_model_section = false,                                          # Startup state for the model draped along the seismic line.

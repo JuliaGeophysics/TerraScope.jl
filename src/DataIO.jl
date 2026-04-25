@@ -184,6 +184,125 @@ function load_data_modem(path::AbstractString)
     return data
 end
 
+function _write_data_block_header!(io;
+    datatype::AbstractString,
+    sign::Int,
+    units::AbstractString,
+    rotation::Real,
+    origin_lat::Real,
+    origin_lon::Real,
+    nf::Int,
+    ns::Int)
+
+    signline = sign == -1 ? "exp(-iwt)" : "exp(+iwt)"
+    println(io, "> $datatype")
+    println(io, "> $signline")
+    println(io, "> $units")
+    println(io, "> $(rotation)")
+    println(io, "> $(origin_lat) $(origin_lon)")
+    println(io, "> $(nf) $(ns)")
+end
+
+function write_data_modem(outputfile::AbstractString, data::MTData;
+    sign::Int = 1,
+    units::AbstractString = "[V/m]/[T]",
+    rotation::Union{Nothing, Real} = nothing,
+    include_impedance::Bool = true,
+    include_tipper::Bool = true)
+
+    ns = data.ns
+    nf = data.nf
+    ns == 0 && error("Data has zero stations.")
+    nf == 0 && error("Data has zero periods.")
+    size(data.loc, 1) == ns || error("Data loc array does not match station count.")
+
+    rotation_value = if isnothing(rotation)
+        if !isempty(data.zrot)
+            value = data.zrot[1]
+            isfinite(value) ? value : 0.0
+        else
+            0.0
+        end
+    else
+        Float64(rotation)
+    end
+
+    origin_lat = length(data.origin) >= 1 ? data.origin[1] : 0.0
+    origin_lon = length(data.origin) >= 2 ? data.origin[2] : 0.0
+
+    open(outputfile, "w") do io
+        println(io, "# Written by TerraScope.write_data_modem")
+
+        if include_impedance
+            _write_data_block_header!(io;
+                datatype = "Full_Impedance",
+                sign = sign,
+                units = units,
+                rotation = rotation_value,
+                origin_lat = origin_lat,
+                origin_lon = origin_lon,
+                nf = nf,
+                ns = ns)
+
+            comp_labels = ("ZXX", "ZXY", "ZYX", "ZYY")
+            for isite in 1:ns
+                site = data.site[isite]
+                lat = data.loc[isite, 1]
+                lon = data.loc[isite, 2]
+                elev = data.loc[isite, 3]
+                x = data.x[isite]
+                y = data.y[isite]
+                for ip in 1:nf
+                    period = data.T[ip]
+                    for icomp in 1:4
+                        zval = data.Z[ip, icomp, isite]
+                        if isfinite(real(zval)) && isfinite(imag(zval))
+                            err = abs(data.Zerr[ip, icomp, isite])
+                            err_out = (isfinite(err) && err > 0) ? err : 1e12
+                            println(io, "$(period) $(site) $(lat) $(lon) $(x) $(y) $(elev) $(comp_labels[icomp]) $(real(zval)) $(imag(zval)) $(err_out)")
+                        end
+                    end
+                end
+            end
+        end
+
+        if include_tipper
+            _write_data_block_header!(io;
+                datatype = "Full_Vertical_Components",
+                sign = sign,
+                units = units,
+                rotation = rotation_value,
+                origin_lat = origin_lat,
+                origin_lon = origin_lon,
+                nf = nf,
+                ns = ns)
+
+            tip_labels = ("TX", "TY")
+            for isite in 1:ns
+                site = data.site[isite]
+                lat = data.loc[isite, 1]
+                lon = data.loc[isite, 2]
+                elev = data.loc[isite, 3]
+                x = data.x[isite]
+                y = data.y[isite]
+                for ip in 1:nf
+                    period = data.T[ip]
+                    for icomp in 1:2
+                        tipval = data.tip[ip, icomp, isite]
+                        if isfinite(real(tipval)) && isfinite(imag(tipval))
+                            err = abs(data.tiperr[ip, icomp, isite])
+                            err_out = (isfinite(err) && err > 0) ? err : 1e12
+                            println(io, "$(period) $(site) $(lat) $(lon) $(x) $(y) $(elev) $(tip_labels[icomp]) $(real(tipval)) $(imag(tipval)) $(err_out)")
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return outputfile
+end
+
 default_data_dir() = joinpath(dirname(@__DIR__), "Data")
 
 function discover_dataset_paths(root::AbstractString = default_data_dir())
