@@ -4,7 +4,6 @@ using CairoMakie
 using Dates
 using DelimitedFiles
 using FFTW
-using GLMakie
 using GeoInterface
 using LinearAlgebra
 using Printf
@@ -21,6 +20,9 @@ include("DataIO.jl")
 include("GeoOverlay.jl")
 include("Seismic.jl")
 include("Viewer.jl")
+include("ImportIO.jl")
+include("RasterImport.jl")
+include("ImportViewer.jl")
 
 export MTModel
 export MTData
@@ -46,6 +48,9 @@ export build_section_surface_polyline
 export save_density_volume
 export load_density_volume
 export load_dataset_bundle
+export ImportOptions, ImportSession, ImportedLayer, ImportedGrid, ImportedPoints
+export set_project_crs!, import_layer!, load_import, read_xyz_points, read_ubc_model
+export launch_demo_viewer
 export launch_viewer
 
 end
