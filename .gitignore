@@ -9,4 +9,4 @@
 /examples/*_ExportIso_*/
 
 # Local datasets and demo assets should never be committed
-/data/
+/Data/

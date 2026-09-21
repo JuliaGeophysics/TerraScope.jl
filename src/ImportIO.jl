@@ -97,6 +97,51 @@ function _xy_transform(source::AbstractString, target::AbstractString)
     end
 end
 
+const GEOGRAPHIC_CRS = "EPSG:4326"
+
+"""Longitude/latitude bounds PROJ declares for a CRS, as (west,south,east,north)."""
+function crs_area_of_use(spec::AbstractString)
+    crs = Proj.CRS(spec)
+    west, south, east, north = Ref{Cdouble}(NaN), Ref{Cdouble}(NaN), Ref{Cdouble}(NaN), Ref{Cdouble}(NaN)
+    name = Ref{Cstring}()
+    Proj.proj_get_area_of_use(crs.pj, west, south, east, north, name) == 1 || return nothing
+    box = (west[], south[], east[], north[])
+    return all(isfinite, box) ? box : nothing
+end
+
+_inside_area(lon, lat, box) = box[1] <= lon <= box[3] && box[2] <= lat <= box[4]
+
+"""
+Resolve the CRS of coordinate columns that carry no georeferencing metadata.
+
+Degrees and projected metres do not overlap in practice: lon/lat is bounded by
+±180/±90, while a metric CRS places survey data tens to hundreds of kilometres from
+its false origin. When the columns are degrees but their order is ambiguous - both
+within ±90, as anywhere outside the high-longitude bands - the target CRS's declared
+area of use decides which column is longitude.
+
+Returns `(source_crs, swap_xy)`; `swap_xy` is true for latitude-first files.
+"""
+function detect_xy_crs(x, y, target::AbstractString; allow_swap::Bool=true)
+    (isempty(x) || isempty(y)) && error("No coordinates to inspect.")
+    within(values, limit) = all(v -> -limit <= v <= limit, extrema(values))
+    as_lonlat = within(x, 180) && within(y, 90)
+    as_latlon = allow_swap && within(x, 90) && within(y, 180)
+    # Neither reading fits the degree box, so the file is already metric. Any other
+    # guess would silently move the data.
+    (as_lonlat || as_latlon) || return (target, false)
+    if as_lonlat && as_latlon
+        box = crs_area_of_use(target)
+        if !isnothing(box)
+            direct = count(((lon,lat),) -> _inside_area(lon,lat,box), zip(x,y))
+            swapped = count(((lat,lon),) -> _inside_area(lon,lat,box), zip(x,y))
+            swapped > direct && return (GEOGRAPHIC_CRS, true)
+        end
+        return (GEOGRAPHIC_CRS, false)   # Fall back to the lon/lat column convention.
+    end
+    return (GEOGRAPHIC_CRS, as_latlon)
+end
+
 function _project_grid(x, y, transform)
     X = Matrix{Float64}(undef, length(x), length(y))
     Y = similar(X)
@@ -246,12 +291,24 @@ function load_import(path::AbstractString, opts::ImportOptions, target_crs::Abst
     target = validate_project_crs(target_crs)
     isfile(path) || error("File not found: $path")
     source = opts.source_crs
-    transform = opts.format in (:xyz,:ubc,:voxel,:seismic) ? _xy_transform(source,target) : nothing
+    # Formats that carry no georeferencing of their own resolve a blank source CRS from
+    # the coordinates themselves, once those have actually been read.
+    autodetect = opts.format in (:xyz,:ubc,:voxel) && isempty(strip(source))
+    transform = (!autodetect && opts.format in (:xyz,:ubc,:voxel,:seismic)) ? _xy_transform(source,target) : nothing
     data = if opts.format == :modem
         grid, source = _load_modem_import(path,opts,target)
         grid
     elseif opts.format == :xyz
         points = read_xyz_points(path; columns=opts.columns, skip_rows=opts.skip_rows, positive_down=opts.positive_down)
+        if autodetect
+            source, swap_xy = detect_xy_crs(points.x,points.y,target)
+            if swap_xy
+                for i in eachindex(points.x)
+                    points.x[i], points.y[i] = points.y[i], points.x[i]
+                end
+            end
+            transform = _xy_transform(source,target)
+        end
         for i in eachindex(points.x)
             points.x[i], points.y[i] = transform(points.x[i],points.y[i])
         end
@@ -259,10 +316,14 @@ function load_import(path::AbstractString, opts::ImportOptions, target_crs::Abst
     elseif opts.format == :ubc
         mesh = isempty(opts.mesh_path) ? companion_mesh(path) : opts.mesh_path
         x,y,z,values = read_ubc_model(path; mesh_path=mesh)
+        # Grid axes are separate vectors, so a latitude-first file cannot be repaired by
+        # swapping columns; only degrees-versus-metres is inferred here.
+        autodetect && ((source,_) = detect_xy_crs(x,y,target;allow_swap=false); transform = _xy_transform(source,target))
         X,Y = _project_grid(x,y,transform)
         ImportedGrid(X,Y,z,values)
     elseif opts.format == :voxel
         volume = load_density_volume(path)
+        autodetect && ((source,_) = detect_xy_crs(volume.x,volume.y,target;allow_swap=false); transform = _xy_transform(source,target))
         X,Y = _project_grid(volume.x,volume.y,transform)
         ImportedGrid(X,Y,volume.z,volume.values)
     elseif opts.format == :shapefile
@@ -314,4 +375,103 @@ function import_layer!(session::ImportSession, path::AbstractString, opts::Impor
     finally
         session.busy = false
     end
+end
+
+"""Nearest grid index for `v` on an ascending axis."""
+function _nearest_axis_index(sorted::Vector{Float64}, v::Float64)
+    n = length(sorted)
+    n == 1 && return 1
+    i = searchsortedfirst(sorted, v)
+    i <= 1 && return 1
+    i > n && return n
+    return (v - sorted[i - 1]) <= (sorted[i] - v) ? i - 1 : i
+end
+
+"""Grow the filled cells into the empty ones, one shell of six neighbours per pass."""
+function _fill_grid_gaps!(values::Array{Float64,3}; max_passes::Int = 64)
+    nx, ny, nz = size(values)
+    neighbours = ((-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1))
+    for _ in 1:max_passes
+        any(isnan, values) || return values
+        source = copy(values)
+        filled = false
+        for k in 1:nz, j in 1:ny, i in 1:nx
+            isnan(values[i, j, k]) || continue
+            total, hits = 0.0, 0
+            for (di, dj, dk) in neighbours
+                ii, jj, kk = i + di, j + dj, k + dk
+                (1 <= ii <= nx && 1 <= jj <= ny && 1 <= kk <= nz) || continue
+                v = source[ii, jj, kk]
+                isnan(v) && continue
+                total += v
+                hits += 1
+            end
+            if hits > 0
+                values[i, j, k] = total / hits
+                filled = true
+            end
+        end
+        filled || break
+    end
+    return values
+end
+
+"""
+    resample_points_to_axes(points, x, y, z) -> Array{Float64,3}
+
+Resample a scattered point cloud onto the rectilinear grid `x × y × z`, which must be
+in the same coordinate system as the points. Each point goes to its nearest cell, cells
+that collect several points average them, and cells that collect none are grown in from
+their filled neighbours. Returns `values[ix, iy, iz]` in the order the axes were given,
+plus the fraction of cells that were filled directly from points.
+"""
+function resample_points_to_axes(points::ImportedPoints, x::AbstractVector{<:Real},
+        y::AbstractVector{<:Real}, z::AbstractVector{<:Real})
+    axes = map(axis -> (a = Float64.(collect(axis)); p = sortperm(a); (a[p], invperm(p))), (x, y, z))
+    (xs, xi), (ys, yi), (zs, zi) = axes
+    nx, ny, nz = length(xs), length(ys), length(zs)
+    sums = zeros(Float64, nx, ny, nz)
+    counts = zeros(Int, nx, ny, nz)
+    for n in eachindex(points.values)
+        v = points.values[n]
+        isfinite(v) || continue
+        i = _nearest_axis_index(xs, points.x[n])
+        j = _nearest_axis_index(ys, points.y[n])
+        k = _nearest_axis_index(zs, points.z[n])
+        sums[i, j, k] += v
+        counts[i, j, k] += 1
+    end
+    hits = count(!iszero, counts)
+    hits == 0 && error("No finite points to resample onto the grid.")
+    values = [counts[i, j, k] == 0 ? NaN : sums[i, j, k] / counts[i, j, k]
+              for i in 1:nx, j in 1:ny, k in 1:nz]
+    _fill_grid_gaps!(values)
+    return values[xi, yi, zi], hits / length(counts)
+end
+
+"""
+    axes_from_points(points; max_cells = 128) -> (x, y, z)
+
+Rectilinear axes covering a point cloud, for gridding a file that has no mesh of its
+own. Gridded survey and model files repeat their coordinates exactly, so an axis with
+few distinct values keeps precisely those values — which is how layered depth columns
+survive intact; any other axis is divided into uniform cells instead, as many as the
+number of points supports.
+"""
+function axes_from_points(points::ImportedPoints; max_cells::Int = 128)
+    n = length(points.values)
+    n == 0 && error("The point cloud is empty.")
+    exact(v) = (u = sort!(unique(Float64.(v))); length(u) <= max_cells ? u : nothing)
+    function uniform(v, count)
+        lo, hi = extrema(Float64.(v))
+        hi <= lo && return [lo]
+        return collect(range(lo, hi; length = max(count, 2)))
+    end
+    z = exact(points.z)
+    nz = z === nothing ? clamp(round(Int, cbrt(n)), 4, max_cells) : length(z)
+    nxy = clamp(round(Int, sqrt(n / nz)), 8, max_cells)
+    z === nothing && (z = uniform(points.z, nz))
+    return something(exact(points.x), uniform(points.x, nxy)),
+           something(exact(points.y), uniform(points.y, nxy)),
+           z
 end

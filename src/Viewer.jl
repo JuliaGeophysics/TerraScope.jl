@@ -72,10 +72,40 @@ function _export_sections(volume::ScalarVolume, section_paths::Vector{Vector{Tup
     return exported
 end
 
-function _display_figure(fig; fullscreen::Bool = false)
-    # File IO and tests do not need an OpenGL context. Load the window backend only
-    # when a window is requested, and cross the lazy import's world-age boundary.
+const _TERRASCOPE_LOGO = raw"""
+▄▄▄▄▄▄▄▄▄                       ▄▄▄▄▄▄▄                         
+▀▀▀███▀▀▀                      █████▀▀▀                         
+   ███ ▄█▀█▄ ████▄ ████▄  ▀▀█▄  ▀████▄  ▄████ ▄███▄ ████▄ ▄█▀█▄ 
+   ███ ██▄█▀ ██ ▀▀ ██ ▀▀ ▄█▀██    ▀████ ██    ██ ██ ██ ██ ██▄█▀ 
+   ███ ▀█▄▄▄ ██    ██    ▀█▄██ ███████▀ ▀████ ▀███▀ ████▀ ▀█▄▄▄ 
+                                                    ██          
+                                                    ▀▀           """
+
+"""Startup banner shared by the launcher and the TerraScope3D viewer."""
+function print_banner(; data_root::AbstractString = "")
+    println()
+    println("  \e[90m┌──────────────────────────────────────────────────────┐\e[0m")
+    println("\e[36m$(_TERRASCOPE_LOGO)\e[0m")
+    println("  \e[90m└──────────────────────────────────────────────────────┘\e[0m")
+    println()
+    println("  \e[3m\e[90mLet's look at diverse geophysical models together...\e[0m")
+    println("  \e[90mFeedback / Issues → pankaj.mishra@gtk.fi\e[0m")
+    isempty(data_root) || println("  \e[90mData directory    → $(data_root)\e[0m")
+    println()
+    flush(stdout)
+    return nothing
+end
+
+# File IO and tests do not need an OpenGL context. Load the window backend only when
+# a window is requested. Callers must cross the resulting world-age boundary before
+# touching any GLMakie method (`Screen`, `isopen`, `wait`, ...).
+function _ensure_glmakie()
     isdefined(@__MODULE__, :GLMakie) || (@eval import GLMakie)
+    return nothing
+end
+
+function _display_figure(fig; fullscreen::Bool = false)
+    _ensure_glmakie()
     return Base.invokelatest() do
         GLMakie.activate!()
         screen = fullscreen ? GLMakie.Screen(; fullscreen = true, float = false, focus_on_show = true) : GLMakie.Screen(; focus_on_show = true)
@@ -84,7 +114,14 @@ function _display_figure(fig; fullscreen::Bool = false)
     end
 end
 
-function launch_demo_viewer(; data_root::AbstractString = default_data_dir(), max_depth::Union{Nothing, Real} = 50_000.0, with_padding::Bool = false, open_fullscreen::Bool = false, block::Bool = !isinteractive(), active_volume::Symbol = :resistivity)
+# Thin wrapper: load the backend first, then run the whole viewer body in the new
+# world so that `wait(screen)` and friends see GLMakie's methods.
+function launch_viewer(; kwargs...)
+    _ensure_glmakie()
+    return Base.invokelatest(_launch_viewer; kwargs...)
+end
+
+function _launch_viewer(; data_root::AbstractString = default_data_dir(), max_depth::Union{Nothing, Real} = 50_000.0, with_padding::Bool = false, open_fullscreen::Bool = false, block::Bool = !isinteractive(), active_volume::Symbol = :resistivity)
     bundle = load_dataset_bundle(data_root; with_padding = with_padding, max_depth = max_depth)
     bundle.resistivity === nothing && error("Resistivity volume is required")
 

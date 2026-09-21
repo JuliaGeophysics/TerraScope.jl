@@ -17,11 +17,18 @@ import ArchGDAL
         @test layer.data.z == [-10,-20]
         @test layer.target_crs == "EPSG:28354"
         @test_throws ErrorException set_project_crs!(session,"EPSG:3067")
-        @test_throws ErrorException import_layer!(session,path,ImportOptions())
-        @test length(session.layers) == 1
+        # A blank source CRS is resolved from the coordinates. These are metric MGA54
+        # eastings/northings, so they are taken as already being in the project CRS.
+        detected = import_layer!(session,path,ImportOptions(log10_values=true))
+        @test detected.source_crs == "EPSG:28354"
+        @test detected.data.x == [500000,500100]
+        @test length(session.layers) == 2
+        # A failed import leaves the existing layers untouched.
+        @test_throws ErrorException import_layer!(session,joinpath(root,"absent.xyz"),opts)
+        @test length(session.layers) == 2
         @test !session.busy
         import_layer!(session,path,opts)
-        @test length(session.layers) == 2 # same property does not overwrite another layer
+        @test length(session.layers) == 3 # same property does not overwrite another layer
         session.busy = true
         @test_throws ErrorException import_layer!(session,path,opts)
         session.busy = false
@@ -176,7 +183,7 @@ end
 
 @testset "Import GUI callbacks without a display" begin
     TerraScope.CairoMakie.activate!()
-    viewer = launch_viewer(;display_window=false,block=false)
+    viewer = launch_import_viewer(;display_window=false,block=false)
     @test isempty(viewer.session.layers)
     viewer.controls.import_button.clicks[] += 1
     @test isempty(viewer.session.target_crs)
@@ -218,10 +225,129 @@ end
     end
 end
 
+@testset "Unlabelled coordinates resolve to degrees or the project CRS" begin
+    @test TerraScope.detect_xy_crs([21.0,30.0],[60.0,68.0],"EPSG:3067") == ("EPSG:4326",false)
+    # Both columns sit inside +/-90, so the area of use of EPSG:3067 breaks the tie.
+    @test TerraScope.detect_xy_crs([60.0,68.0],[21.0,30.0],"EPSG:3067") == ("EPSG:4326",true)
+    @test TerraScope.detect_xy_crs([141.0,143.0],[-21.0,-19.0],"EPSG:28354") == ("EPSG:4326",false)
+    @test TerraScope.detect_xy_crs([-21.0,-19.0],[141.0,143.0],"EPSG:28354") == ("EPSG:4326",true)
+    # Metric coordinates leave the degree box, so they are already in the project CRS.
+    @test TerraScope.detect_xy_crs([401100.0,506359.0],[7.008e6,7.113e6],"EPSG:3067") == ("EPSG:3067",false)
+    # Grid axes cannot be repaired by swapping, so only degrees-versus-metres is asked.
+    @test TerraScope.detect_xy_crs([60.0,68.0],[21.0,30.0],"EPSG:3067";allow_swap=false) == ("EPSG:4326",false)
+    @test TerraScope.crs_area_of_use("EPSG:3067") == (19.08,58.84,31.59,70.09)
+    @test_throws ErrorException TerraScope.detect_xy_crs(Float64[],Float64[],"EPSG:3067")
+end
+
+@testset "Blank source CRS is detected from the coordinates" begin
+    mktempdir() do root
+        session = ImportSession()
+        set_project_crs!(session,"EPSG:3067")
+        lonlat = joinpath(root,"lonlat.xyz")
+        write(lonlat,"# comment header
+25.0 63.2 -100 2700
+26.0 63.8 -200 2800
+")
+        layer = import_layer!(session,lonlat,ImportOptions(format=:xyz,kind=:density,units="kg/m^3"))
+        @test layer.source_crs == "EPSG:4326"
+        @test all(>(1e5),layer.data.x)         # Converted to TM35FIN metres.
+        @test all(>(6e6),layer.data.y)
+        expected_x, expected_y = copy(layer.data.x), copy(layer.data.y)
+
+        # Same points written latitude first must land in the same place.
+        latlon = joinpath(root,"latlon.xyz")
+        write(latlon,"63.2 25.0 -100 2700
+63.8 26.0 -200 2800
+")
+        swapped = import_layer!(session,latlon,ImportOptions(format=:xyz,kind=:density,units="kg/m^3"))
+        @test swapped.source_crs == "EPSG:4326"
+        @test swapped.data.x ≈ expected_x
+        @test swapped.data.y ≈ expected_y
+
+        # Coordinates already in the project CRS are left alone.
+        metric = joinpath(root,"metric.xyz")
+        write(metric,"$(expected_x[1]) $(expected_y[1]) -100 2700
+$(expected_x[2]) $(expected_y[2]) -200 2800
+")
+        direct = import_layer!(session,metric,ImportOptions(format=:xyz,kind=:density,units="kg/m^3"))
+        @test direct.source_crs == "EPSG:3067"
+        @test direct.data.x ≈ expected_x
+        @test direct.data.y ≈ expected_y
+
+        # An explicit source CRS still wins over detection.
+        explicit = import_layer!(session,lonlat,ImportOptions(format=:xyz,source_crs="EPSG:4326",kind=:density))
+        @test explicit.source_crs == "EPSG:4326"
+        @test explicit.data.x ≈ expected_x
+    end
+end
+
 @testset "Malformed CSV does not shift coordinate columns" begin
     mktemp() do path,io
         write(io,"1,,2,3,4\n")
         close(io)
         @test_throws ErrorException read_xyz_points(path)
     end
+end
+
+@testset "Scattered points resampled onto a model grid" begin
+    x = [0.0, 10.0, 20.0, 30.0]
+    y = [100.0, 110.0, 120.0]
+    z = [-5.0, -15.0]
+    field(px, py, pz) = px + 2py - 3pz
+
+    # Every cell sampled exactly once: the grid must reproduce the field.
+    dense = ImportedPoints(
+        [xi for xi in x, _ in y, _ in z][:],
+        [yj for _ in x, yj in y, _ in z][:],
+        [zk for _ in x, _ in y, zk in z][:],
+        [field(xi, yj, zk) for xi in x, yj in y, zk in z][:])
+    values, coverage = resample_points_to_axes(dense, x, y, z)
+    @test size(values) == (length(x), length(y), length(z))
+    @test coverage == 1.0
+    @test values ≈ [field(xi, yj, zk) for xi in x, yj in y, zk in z]
+
+    # Off-centre points snap to the nearest cell, and a descending axis comes back in
+    # the order it was given rather than in sorted order.
+    shifted = ImportedPoints([1.0, 29.0], [101.0, 119.0], [-4.0, -14.0], [7.0, 9.0])
+    values, coverage = resample_points_to_axes(shifted, x, reverse(y), z)
+    @test values[1, 3, 1] == 7.0          # reverse(y)[3] == 100.0
+    @test values[4, 1, 2] == 9.0          # reverse(y)[1] == 120.0
+    @test coverage ≈ 2 / (length(x) * length(y) * length(z))
+    @test !any(isnan, values)             # the empty cells are grown in from the filled ones
+
+    # Two points in one cell average; a cloud with nothing usable is an error.
+    doubled = ImportedPoints([0.0, 1.0], [100.0, 100.0], [-5.0, -5.0], [10.0, 20.0])
+    values, _ = resample_points_to_axes(doubled, x, y, z)
+    @test values[1, 1, 1] == 15.0
+    @test_throws ErrorException resample_points_to_axes(
+        ImportedPoints([0.0], [100.0], [-5.0], [NaN]), x, y, z)
+end
+
+@testset "Axes derived from a point cloud" begin
+    x = [0.0, 10.0, 20.0]
+    z = [-5.0, -25.0]
+    # A gridded file repeats its coordinates, so every axis comes back exactly.
+    gridded = ImportedPoints(
+        [xi for xi in x, _ in x, _ in z][:],
+        [yj for _ in x, yj in x, _ in z][:],
+        [zk for _ in x, _ in x, zk in z][:],
+        collect(1.0:(length(x)^2 * length(z))))
+    ax, ay, az = axes_from_points(gridded)
+    @test ax == x
+    @test ay == x
+    @test az == sort(z)
+
+    # A cloud with too many distinct values in x falls back to uniform cells there,
+    # while the layered depths are still kept exactly.
+    n = 400
+    scattered = ImportedPoints(collect(range(0.0, 100.0; length = n)), fill(7.0, n),
+        repeat([-5.0, -25.0], outer = n ÷ 2), ones(n))
+    ax, ay, az = axes_from_points(scattered; max_cells = 16)
+    @test az == [-25.0, -5.0]
+    @test ay == [7.0]
+    @test length(ax) > 2 && issorted(ax) && extrema(ax) == (0.0, 100.0)
+    @test length(ax) <= 16
+
+    @test_throws ErrorException axes_from_points(
+        ImportedPoints(Float64[], Float64[], Float64[], Float64[]))
 end

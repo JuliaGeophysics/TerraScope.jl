@@ -50,7 +50,9 @@ export load_density_volume
 export load_dataset_bundle
 export ImportOptions, ImportSession, ImportedLayer, ImportedGrid, ImportedPoints
 export set_project_crs!, import_layer!, load_import, read_xyz_points, read_ubc_model
-export launch_demo_viewer
+export resample_points_to_axes, axes_from_points
 export launch_viewer
+export launch_import_viewer
+export print_banner
 
 end

@@ -1,20 +1,47 @@
 using Pkg
-Pkg.activate(normpath(joinpath(@__DIR__, "..")))
+
+const PROJECT_ROOT = normpath(joinpath(@__DIR__, ".."))
+Pkg.activate(PROJECT_ROOT)
+
 using TerraScope
 
-# Compile import paths without requiring a user's dataset or seismic files.
-mktempdir() do root
-    session = ImportSession()
-    set_project_crs!(session,"EPSG:28354")
-    xyz = joinpath(root,"example.xyz")
-    write(xyz,"500000 7700000 -10 100\n500100 7700100 -20 200\n")
-    import_layer!(session,xyz,ImportOptions(source_crs="EPSG:28354"))
-    rho = joinpath(root,"example.rho")
-    write_model_modem(rho,fill(100.,2),fill(100.,2),fill(50.,2),fill(100.,2,2,2),[0.,0.,0.])
-    import_layer!(session,rho,ImportOptions(format=:modem,origin_latlon=(-20.,141.)))
-    write(joinpath(root,"example.msh"),"2 2 2\n500000 7700000 0\n2*100\n2*100\n2*50\n")
-    ubc = joinpath(root,"example.den")
-    write(ubc,join(1:8,"\n"))
-    import_layer!(session,ubc,ImportOptions(format=:ubc,source_crs="EPSG:28354",kind=:density))
+const DEMO_ROOT = joinpath(PROJECT_ROOT, "Data", "demo")
+
+bundle = TerraScope.load_dataset_bundle(DEMO_ROOT; with_padding = false, max_depth = 50_000.0)
+volume = bundle.resistivity
+
+if volume !== nothing
+    x1, x2 = extrema(volume.x)
+    y1, y2 = extrema(volume.y)
+    TerraScope.build_section_surface_polyline(
+        volume.x,
+        volume.y,
+        volume.z,
+        volume.values,
+        [(x1, y1), (x2, y2)];
+        nsamp = 120,
+    )
 end
-println("TerraScope import precompile workload completed.")
+
+if !isempty(bundle.shapefiles)
+    TerraScope.shapefile_segments(
+        first(bundle.shapefiles);
+        auto_reproject_to_wgs84 = false,
+        xlim = extrema(volume.x),
+        ylim = extrema(volume.y),
+    )
+end
+
+if !isempty(bundle.segy_files)
+    TerraScope.load_seismic_curtain_from_segy(
+        first(bundle.segy_files);
+        trace_xy = :source,
+        display_mode = :envelope,
+        sample_spacing_m = 12.5,
+        max_traces = 400,
+        max_samples = 400,
+        clip_quantile = 0.995,
+    )
+end
+
+println("TerraScope precompile workload completed.")
