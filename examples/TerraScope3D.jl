@@ -14,9 +14,12 @@ using GeoInterface
 using Proj
 using FFTW
 using TerraScope: core_indices, edges_from_centers, load_data_modem, load_density_volume, load_model_modem, z_indices_for_max_depth
+import TerraScope   # File readers shared with the package (ImportOptions, resampling).
 
 # -------------------- Input Files --------------------
-# Main resistivity model, ModEM data file, and optional linework overlay.
+# Every input is optional. A method's `_model` is the 3D volume and its `_data` is the
+# measured dataset that georeferences it; see `_resolve_frame` further down for how the
+# two combine. With nothing configured at all the viewer opens an empty 3D scene.
 
 function _merge_launch_config(base::NamedTuple, override::NamedTuple)
     return (; (name => begin
@@ -34,17 +37,14 @@ function _merge_launch_config(base::NamedTuple, override::NamedTuple)
     end for name in keys(base))...)
 end
 
-default_data_root = joinpath(dirname(@__DIR__), "Data", "demo")
 DEFAULT_TERRASCOPE_LAUNCH_CONFIG = (
-    paths = (
-        data_root = default_data_root,
-        model_file = joinpath(default_data_root, "I_NLCG_140.rho"),
-        data_file = joinpath(default_data_root, "I_NLCG_140.dat"),
-        shapefile_path = joinpath(default_data_root, "gis", "Tnew", "Tnew.shp"),
-        density_file = joinpath(default_data_root, "Density3D.vox"),
-        susceptibility_file = joinpath(default_data_root, "Susceptibility3D.vox"),
-        seismic_file = joinpath(default_data_root, "fire_updated.sgy"),
+    inputs = (                       # Absolute paths; "" means the input is not used.
+        MT_model = "", MT_data = "",
+        gravity_model = "", gravity_data = "",
+        magnetic_model = "", magnetic_data = "",
+        seismic_data = "",
     ),
+    shapefiles = NamedTuple[],       # (path =, color =, width =, alpha =) per file.
     model = (
         log10_scale = true,
         colormap = :Spectral,
@@ -77,6 +77,8 @@ DEFAULT_TERRASCOPE_LAUNCH_CONFIG = (
         show_scale_bar = true,
         annotation_color = :black,
         annotation_line_width = 2.0,
+        survey_colormap = :viridis, survey_markersize = 5, survey_max_points = 60_000,
+        data_marker_color = :black,
     ),
     isosurface = (
         enabled = false,
@@ -110,14 +112,28 @@ DEFAULT_TERRASCOPE_LAUNCH_CONFIG = (
 
 launch_config = @isdefined(TERRASCOPE_LAUNCH_CONFIG) ? _merge_launch_config(DEFAULT_TERRASCOPE_LAUNCH_CONFIG, TERRASCOPE_LAUNCH_CONFIG) : DEFAULT_TERRASCOPE_LAUNCH_CONFIG
 
-data_root = launch_config.paths.data_root
-model_file = launch_config.paths.model_file
-data_file = launch_config.paths.data_file
-shapefile_path = launch_config.paths.shapefile_path
-density_file = launch_config.paths.density_file
-susceptibility_file = launch_config.paths.susceptibility_file
-seismic_file = launch_config.paths.seismic_file
-model_name_for_export = splitext(basename(model_file))[1]
+_input_path(x) = x === nothing ? "" : String(strip(String(x)))
+
+mt_model_file = _input_path(launch_config.inputs.MT_model)
+mt_data_file = _input_path(launch_config.inputs.MT_data)
+gravity_model_file = _input_path(launch_config.inputs.gravity_model)
+gravity_data_file = _input_path(launch_config.inputs.gravity_data)
+magnetic_model_file = _input_path(launch_config.inputs.magnetic_model)
+magnetic_data_file = _input_path(launch_config.inputs.magnetic_data)
+seismic_file = _input_path(launch_config.inputs.seismic_data)
+
+# Every model input, in the order the property buttons appear. `kind` is the physical
+# property the viewer colours and labels; the method name is what the user configures.
+model_inputs = (
+    (kind = :resistivity, method = "MT", model = mt_model_file, data = mt_data_file, units = "ohm m"),
+    (kind = :density, method = "gravity", model = gravity_model_file, data = gravity_data_file, units = "kg/m^3"),
+    (kind = :susceptibility, method = "magnetic", model = magnetic_model_file, data = magnetic_data_file, units = "SI"),
+)
+
+configured_inputs = [p for p in (mt_model_file, mt_data_file, gravity_model_file, gravity_data_file,
+                                 magnetic_model_file, magnetic_data_file, seismic_file) if !isempty(p)]
+data_root = isempty(configured_inputs) ? pwd() : dirname(first(configured_inputs))
+model_name_for_export = isempty(configured_inputs) ? "TerraScope" : splitext(basename(first(configured_inputs)))[1]
 
 # -------------------- Model Display --------------------
 # Basic resistivity rendering options for the 3D view and section exports.
@@ -142,13 +158,26 @@ show_outer_ticks_axis = launch_config.view.show_outer_ticks_axis
 export_png_scale = launch_config.view.export_png_scale
 
 # -------------------- Map Overlay --------------------
-# Shapefile and annotation styling drawn above the model.
+# Shapefile and annotation styling drawn above the model. Each shapefile carries its
+# own style; `overlay.line_*` below only fills in what an entry leaves out.
 overlay_z_fixed = launch_config.overlay.z_fixed
 overlay_auto_reproject_to_wgs84 = launch_config.overlay.auto_reproject_to_wgs84
 overlay_line_color = launch_config.overlay.line_color
 overlay_line_width = launch_config.overlay.line_width
+
+shapefile_layers = [(
+        path = _input_path(get(entry, :path, "")),
+        color = get(entry, :color, overlay_line_color),
+        width = get(entry, :width, overlay_line_width),
+        alpha = Float64(get(entry, :alpha, 1.0)),
+    ) for entry in launch_config.shapefiles]
+filter!(entry -> !isempty(entry.path), shapefile_layers)
 overlay_section_line_color = launch_config.overlay.section_line_color
 overlay_section_line_width = launch_config.overlay.section_line_width
+data_marker_color = launch_config.overlay.data_marker_color
+survey_colormap = launch_config.overlay.survey_colormap
+survey_markersize = launch_config.overlay.survey_markersize
+survey_max_points = launch_config.overlay.survey_max_points
 show_north_arrow = launch_config.overlay.show_north_arrow
 show_scale_bar = launch_config.overlay.show_scale_bar
 annotation_color = launch_config.overlay.annotation_color
@@ -354,7 +383,7 @@ function model_xy_to_target_crs_centers(M, d, target_crs::AbstractString)
 
     mismatch_dim_consistent = abs(log(span_x_model / span_e_sta)) + abs(log(span_y_model / span_n_sta))
 
-    return x_target, y_target, lat0, lon0, shiftlat, shiftlon, lat_ref, lon_ref, mismatch_dim_consistent
+    return x_target, y_target, lat0, lon0, shiftlat, shiftlon, lat_ref, lon_ref, mismatch_dim_consistent, station_tx, station_ty
 end
 
 function _nice_scale_length(target::Float64)
@@ -789,6 +818,7 @@ function plot_shapefile_on_3d!(ax, shapefile_path;
     z_fixed::Real = 0.0,
     line_color = :black,
     line_width = 1.5,
+    alpha::Real = 1.0,
     auto_reproject_to_wgs84 = true,
     post_transform = (x, y) -> (x, y),
     xlim::Union{Nothing, Tuple{<:Real, <:Real}} = nothing,
@@ -883,7 +913,8 @@ function plot_shapefile_on_3d!(ax, shapefile_path;
 
     if !isempty(all_x)
         all_z = [isnan(x) ? NaN : Float64(z_fixed) for x in all_x]
-        lines!(ax, all_x, all_y, all_z; color = line_color, linewidth = line_width)
+        lines!(ax, all_x, all_y, all_z; color = line_color, linewidth = line_width,
+            alpha = Float64(alpha), transparency = alpha < 1)
     end
     return segments_count
 end
@@ -1421,10 +1452,37 @@ function fit_camera!(scene, xv, yv, zv)
     update_cam!(scene, eye, center, Vec3f(0, 0, 1))
 end
 
+# XY extent for a scene with no model in it: whatever non-model content was configured,
+# else a default box. Only ever called when nothing else defines the scene's size.
+function _blank_scene_extent(seismic_curtain, overlays, overlay_transform, auto_reproject::Bool)
+    xs, ys = Float64[], Float64[]
+    if seismic_curtain !== nothing
+        append!(xs, collect(extrema(seismic_curtain.X)))
+        append!(ys, collect(extrema(seismic_curtain.Y)))
+    end
+    for entry in overlays, segment in TerraScope.shapefile_segments(entry.path;
+            auto_reproject_to_wgs84 = auto_reproject, post_transform = overlay_transform)
+        for (px, py) in segment
+            push!(xs, px)
+            push!(ys, py)
+        end
+    end
+    isempty(xs) && return (-5000.0, 5000.0), (-5000.0, 5000.0)
+    xlo, xhi = extrema(xs)
+    ylo, yhi = extrema(ys)
+    return (xlo - max(0.05 * (xhi - xlo), 500.0), xhi + max(0.05 * (xhi - xlo), 500.0)),
+           (ylo - max(0.05 * (yhi - ylo), 500.0), yhi + max(0.05 * (yhi - ylo), 500.0))
+end
+
 function modem_3d_viewer_crosssections(
     M;
+    primary_kind::Symbol = :resistivity,
+    primary_name::AbstractString = "Resistivity",
+    primary_available::Bool = true,
     density_model = nothing,
     susceptibility_model = nothing,
+    overlays = NamedTuple[],
+    data_layers = Dict{Symbol, Any}(),
     log10scale::Bool = true,
     cmap = :Spectral,
     figsize = (1760, 960),
@@ -1483,8 +1541,8 @@ function modem_3d_viewer_crosssections(
     cmin, cmax = _resolve_display_range(R, resistivity_range)
 
     resistivity_volume = (
-        name = "Resistivity",
-        kind = :resistivity,
+        name = primary_name,
+        kind = primary_kind,
         x = x,
         y = y,
         z = z,
@@ -1492,7 +1550,7 @@ function modem_3d_viewer_crosssections(
         cmin = cmin,
         cmax = cmax,
         cmap = cmap,
-        label = _volume_colorbar_label(:resistivity, log10scale),
+        label = _volume_colorbar_label(primary_kind, log10scale),
         logscale = log10scale,
     )
 
@@ -1500,7 +1558,7 @@ function modem_3d_viewer_crosssections(
         nothing
     else
         d_kz = isnothing(max_depth) ? (1:length(density_model.cz)) : z_indices_for_max_depth(density_model.cz, float(max_depth))
-        d_vals = density_model.A[:, :, d_kz] ./ 1000.0
+        d_vals = density_model.A[:, :, d_kz]
         d_cmin, d_cmax = _resolve_display_range(d_vals, get(volume_display_ranges, :density, nothing))
         (
             name = getproperty(density_model, :name),
@@ -1538,12 +1596,13 @@ function modem_3d_viewer_crosssections(
         )
     end
 
-    volumes = Dict{Symbol, Any}(:resistivity => resistivity_volume)
+    volumes = Dict{Symbol, Any}(primary_kind => resistivity_volume)
     density_volume !== nothing && (volumes[:density] = density_volume)
     susceptibility_volume !== nothing && (volumes[:susceptibility] = susceptibility_volume)
-    volume_order = Symbol[:resistivity]
-    density_volume !== nothing && push!(volume_order, :density)
-    susceptibility_volume !== nothing && push!(volume_order, :susceptibility)
+    volume_order = Symbol[primary_kind]
+    for (kind, volume) in ((:density, density_volume), (:susceptibility, susceptibility_volume))
+        kind == primary_kind || volume === nothing || push!(volume_order, kind)
+    end
     current_kind = Observable(first(volume_order))
     current_volume() = volumes[current_kind[]]
 
@@ -1596,6 +1655,7 @@ function modem_3d_viewer_crosssections(
 
     show_map_slice = Observable(false)
     show_seis_curtain = Observable(seismic_curtain !== nothing)
+    show_data = Observable(false)
     show_seis_model_section = Observable(show_seismic_model_section_default)
     show_full_layout = Observable(!scene_only_default)
 
@@ -1614,16 +1674,22 @@ function modem_3d_viewer_crosssections(
     btn_toggle_seis_section = Button(view_controls[1, 8], label = seismic_section_toggle_label(seismic_curtain !== nothing, show_seis_curtain[]), fontsize = 10)
     btn_reset = Button(view_controls[1, 9], label = "Reset View", fontsize = 10)
     btn_export_3d = Button(view_controls[1, 10], label = "Export 3D", fontsize = 10)
-    btn_show_resistivity = Button(view_controls[1, 11], label = "Resistivity", fontsize = 10)
-    btn_show_density = Button(view_controls[1, 12], label = haskey(volumes, :density) ? "Density" : "Density N/A", fontsize = 10)
-    btn_show_susceptibility = Button(view_controls[1, 13], label = haskey(volumes, :susceptibility) ? "Susceptibility" : "Susceptibility N/A", fontsize = 10)
-    _volume_buttons[:resistivity] = btn_show_resistivity
-    _volume_buttons[:density] = btn_show_density
-    _volume_buttons[:susceptibility] = btn_show_susceptibility
-    _volume_base_labels[:resistivity] = "Resistivity"
-    _volume_base_labels[:density] = haskey(volumes, :density) ? "Density" : "Density N/A"
-    _volume_base_labels[:susceptibility] = haskey(volumes, :susceptibility) ? "Susceptibility" : "Susceptibility N/A"
+    # One button per property, whether or not a file was configured for it; a property
+    # with no volume behind it reads "N/A" and does nothing when pressed.
+    property_labels = ((:resistivity, "Resistivity"), (:density, "Density"), (:susceptibility, "Susceptibility"))
+    for (offset, (kind, label)) in enumerate(property_labels)
+        have = haskey(volumes, kind) && (kind != primary_kind || primary_available)
+        text = have ? label : "$label N/A"
+        _volume_buttons[kind] = Button(view_controls[1, 10 + offset], label = text, fontsize = 10)
+        _volume_base_labels[kind] = text
+    end
     highlight_active_volume_button!(current_kind[])
+
+    # Measured data for whichever property is on screen: MT site locations, or the
+    # survey points behind a gravity/magnetic model.
+    data_toggle_label() = !haskey(data_layers, current_kind[]) ? "Data N/A" :
+        (show_data[] ? "Hide Data" : "Show Data")
+    btn_toggle_data = Button(view_controls[1, 14], label = data_toggle_label(), fontsize = 10)
 
     btn_finish_section = Button(section_controls[1, 1], label = "Finish Section", fontsize = 9)
     btn_clear_points = Button(section_controls[1, 2], label = "Clear Points", fontsize = 9)
@@ -1671,12 +1737,13 @@ function modem_3d_viewer_crosssections(
     btn_clear_iso = Button(iso_controls[1, 14], label = "Clear Iso", fontsize = 9, width = 90)
     btn_export_iso = Button(iso_controls[1, 15], label = "Export Iso DXF", fontsize = 10)
     Label(iso_controls[2, 1], "Visible:", halign = :right, fontsize = 10)
-    iso_res_checkbox = Checkbox(iso_controls[2, 2], checked = true)
-    iso_res_label = Label(iso_controls[2, 3], "Resistivity", fontsize = 10, color = :gray30)
-    iso_den_checkbox = Checkbox(iso_controls[2, 4], checked = haskey(volumes, :density))
-    iso_den_label = Label(iso_controls[2, 5], haskey(volumes, :density) ? "Density" : "Density N/A", fontsize = 10, color = haskey(volumes, :density) ? :gray30 : :gray55)
-    iso_sus_checkbox = Checkbox(iso_controls[2, 6], checked = haskey(volumes, :susceptibility))
-    iso_sus_label = Label(iso_controls[2, 7], haskey(volumes, :susceptibility) ? "Susceptibility" : "Susceptibility N/A", fontsize = 10, color = haskey(volumes, :susceptibility) ? :gray30 : :gray55)
+    iso_checkboxes = Dict{Symbol, Any}()
+    for (offset, (kind, label)) in enumerate(property_labels)
+        have = haskey(volumes, kind) && (kind != primary_kind || primary_available)
+        iso_checkboxes[kind] = Checkbox(iso_controls[2, 2offset], checked = have)
+        Label(iso_controls[2, 2offset + 1], have ? label : "$label N/A", fontsize = 10,
+            color = have ? :gray30 : :gray55)
+    end
 
     selector_ax = Axis(selector_grid[1, 1], title = "XY selector: left-click to add points, right-click/Finish to create section", aspect = DataAspect())
 
@@ -1763,7 +1830,6 @@ function modem_3d_viewer_crosssections(
     corner_controls = GridLayout(fig[1, 1], tellwidth = false, tellheight = false, halign = :right, valign = :top)
     rowsize!(corner_controls, 1, Fixed(36))
     btn_toggle_view_mode = Button(corner_controls[2, 1], label = layout_toggle_label(show_full_layout[]), fontsize = 11, width = 150)
-
     section_count() = length(section_paths[])
 
     function update_selector_lines!()
@@ -1852,11 +1918,7 @@ function modem_3d_viewer_crosssections(
     isosurface_params = Dict{Symbol, Dict{String, Any}}()
     iso_color_by_depth = Observable(Bool(isosurface_defaults.color_by_depth))
     iso_alpha_by_kind = Dict{Symbol, Float64}(kind => clamp(Float64(isosurface_defaults.alpha), 0.05, 0.95) for kind in volume_order)
-    iso_visibility = Dict(
-        :resistivity => iso_res_checkbox.checked,
-        :density => iso_den_checkbox.checked,
-        :susceptibility => iso_sus_checkbox.checked,
-    )
+    iso_visibility = Dict(kind => box.checked for (kind, box) in iso_checkboxes)
 
     function clear_dynamic_plots!()
         for p in reverse(dynamic_plots)
@@ -2143,6 +2205,22 @@ function modem_3d_viewer_crosssections(
         vol = current_volume()
         iz = min(depth_slider.value[], length(vol.z))
 
+        layer = show_data[] ? get(data_layers, current_kind[], nothing) : nothing
+        if layer !== nothing
+            step = max(1, cld(length(layer.x), survey_max_points))
+            inds = 1:step:length(layer.x)
+            h_data = if layer.values === nothing
+                scatter!(target_ax, layer.x[inds], layer.y[inds], layer.z[inds];
+                    color = data_marker_color, markersize = 1.6 * survey_markersize,
+                    marker = :utriangle)
+            else
+                scatter!(target_ax, layer.x[inds], layer.y[inds], layer.z[inds];
+                    color = layer.values[inds], colormap = survey_colormap,
+                    colorrange = layer.colorrange, markersize = survey_markersize)
+            end
+            target_ax === ax && push!(dynamic_plots, h_data)
+        end
+
         if include_map_slice
             if target_ax === ax
                 # Use persistent Observable-backed map slice for the main axis
@@ -2226,11 +2304,12 @@ function modem_3d_viewer_crosssections(
 
     function draw_static_overlays!(target_scene)
         vol = current_volume()
-        if @isdefined(shapefile_path)
-            plot_shapefile_on_3d!(target_scene, shapefile_path;
+        for entry in overlays
+            plot_shapefile_on_3d!(target_scene, entry.path;
                 z_fixed = overlay_z_fixed,
-                line_color = overlay_line_color,
-                line_width = overlay_line_width,
+                line_color = entry.color,
+                line_width = entry.width,
+                alpha = entry.alpha,
                 auto_reproject_to_wgs84 = overlay_auto_reproject_to_wgs84,
                 post_transform = overlay_transform,
                 xlim = extrema(vol.x),
@@ -2569,22 +2648,27 @@ function modem_3d_viewer_crosssections(
         end
         current_kind[] = kind
         set_close_to!(depth_slider, min(depth_slider.value[], length(current_volume().z)))
+        btn_toggle_data.label[] = data_toggle_label()
         highlight_active_volume_button!(kind)
         update_volume_controls!()
         redraw_scene!()
         update_axis_info!()
     end
 
-    on(btn_show_resistivity.clicks) do _
-        switch_volume!(:resistivity)
+    for (kind, button) in _volume_buttons
+        on(button.clicks) do _
+            switch_volume!(kind)
+        end
     end
 
-    on(btn_show_density.clicks) do _
-        switch_volume!(:density)
-    end
-
-    on(btn_show_susceptibility.clicks) do _
-        switch_volume!(:susceptibility)
+    on(btn_toggle_data.clicks) do _
+        if !haskey(data_layers, current_kind[])
+            export_status[] = "No data file is configured for $(_volume_base_labels[current_kind[]])"
+            return
+        end
+        show_data[] = !show_data[]
+        btn_toggle_data.label[] = data_toggle_label()
+        redraw_scene!()
     end
 
     on(btn_toggle_map.clicks) do _
@@ -2738,34 +2822,23 @@ function modem_3d_viewer_crosssections(
         section_count = section_count,
         show_map_slice = show_map_slice,
         show_full_layout = show_full_layout,
-        colorrange = (cmin = cmin, cmax = cmax)
+        colorrange = (cmin = cmin, cmax = cmax),
+        volumes = volumes,
+        volume_buttons = _volume_buttons,
+        data_layers = data_layers,
+        show_data = show_data,
+        toggle_data_button = btn_toggle_data
     )
 end
 
-function main()
-    # ── TerraScope banner ────────────────────────────────────────────────
-    _LOGO = raw"""
-                                                                
-▄▄▄▄▄▄▄▄▄                       ▄▄▄▄▄▄▄                         
-▀▀▀███▀▀▀                      █████▀▀▀                         
-   ███ ▄█▀█▄ ████▄ ████▄  ▀▀█▄  ▀████▄  ▄████ ▄███▄ ████▄ ▄█▀█▄ 
-   ███ ██▄█▀ ██ ▀▀ ██ ▀▀ ▄█▀██    ▀████ ██    ██ ██ ██ ██ ██▄█▀ 
-   ███ ▀█▄▄▄ ██    ██    ▀█▄██ ███████▀ ▀████ ▀███▀ ████▀ ▀█▄▄▄ 
-                                                    ██          
-                                                    ▀▀           """
-
-    println()
-    println("  \e[90m┌──────────────────────────────────────────────────────┐\e[0m")
-    println("\e[36m$(_LOGO)\e[0m")
-    println("  \e[90m└──────────────────────────────────────────────────────┘\e[0m")
-    println()
-    println("  \e[3m\e[90mLet's look at diverse geophysical models together...\e[0m")
-    println("  \e[90mFeedback / Issues → pankaj.mishra@gtk.fi\e[0m")
-    println("  \e[90mData directory    → $(data_root)\e[0m")
-    println()
+# `open_window = false` builds the scene without opening an OpenGL window; used by
+# the headless smoke test in scripts/import_smoketest.jl. `show_banner = false` is
+# for callers that already printed it, such as the launcher's pre-flight check.
+function main(; open_window::Bool = true, show_banner::Bool = true)
+    show_banner && TerraScope.print_banner(; data_root = data_root)
 
     # ── Progress helpers ─────────────────────────────────────────────────
-    _total_steps = 8
+    _total_steps = 9
     _current_step = Ref(0)
 
     function _step!(label::AbstractString; done::Bool = false)
@@ -2781,37 +2854,54 @@ function main()
         flush(stdout)
     end
 
-    # ── Load data ────────────────────────────────────────────────────────
-    _step!("Loading resistivity model")
-    M = load_model_modem(model_file)
+    # ── Coordinate frame ─────────────────────────────────────────────────
+    # A ModEM mesh is local metres about its own origin, and only becomes georeferenced
+    # once its data file supplies that origin. So: MT model plus MT data puts the scene
+    # in the project CRS; an MT model on its own is drawn in its own local metres; with
+    # no MT model the scene is in the project CRS, which is what every other input is
+    # read into anyway.
+    _step!("Loading MT model")
+    M = isempty(mt_model_file) ? nothing : load_model_modem(mt_model_file)
+    d = (M !== nothing && !isempty(mt_data_file)) ? load_data_modem(mt_data_file) : nothing
 
-    _step!("Georeferencing model")
-    d = load_data_modem(data_file)
-    x_target, y_target, lat0, lon0, shiftlat, shiftlon, lat_ref, lon_ref, mismatch_dim_consistent =
-        model_xy_to_target_crs_centers(M, d, target_crs)
-
-    wgs84_to_target = _resolve_wgs84_to_target_xy_transform(target_crs)
-    target_to_wgs84 = _resolve_target_xy_to_wgs84_transform(target_crs)
-    overlay_transform = (lon, lat) -> begin
-        lon_aligned = Float64(lon) + Float64(shiftlon)
-        lat_aligned = Float64(lat) + Float64(shiftlat)
-        e, n = wgs84_to_target(lon_aligned, lat_aligned)
-        return e, n
+    _step!("Georeferencing")
+    local x_target, y_target, overlay_transform, xy_to_latlon
+    georeferenced = M === nothing || d !== nothing
+    if M !== nothing && d !== nothing
+        x_target, y_target, lat0, lon0, shiftlat, shiftlon, lat_ref, lon_ref, mismatch_dim_consistent,
+            station_x, station_y = model_xy_to_target_crs_centers(M, d, target_crs)
+        wgs84_to_target = _resolve_wgs84_to_target_xy_transform(target_crs)
+        target_to_wgs84 = _resolve_target_xy_to_wgs84_transform(target_crs)
+        overlay_transform = (lon, lat) ->
+            wgs84_to_target(Float64(lon) + Float64(shiftlon), Float64(lat) + Float64(shiftlat))
+        xy_to_latlon = (xv, yv) -> begin
+            lon, lat = target_to_wgs84(Float64(xv), Float64(yv))
+            return lon - Float64(shiftlon), lat - Float64(shiftlat)
+        end
+    elseif M !== nothing
+        # ModEM keeps north in cx and east in cy; the scene plots east along x.
+        x_target = collect(Float64, M.cy)
+        y_target = collect(Float64, M.cx)
+        overlay_transform = (xv, yv) -> (Float64(xv), Float64(yv))
+        xy_to_latlon = nothing
+        @info "No MT data file: the model is drawn in its own local coordinates, and georeferenced overlays are left out."
+    else
+        _validate_target_crs(target_crs)
+        wgs84_to_target = _resolve_wgs84_to_target_xy_transform(target_crs)
+        target_to_wgs84 = _resolve_target_xy_to_wgs84_transform(target_crs)
+        x_target = Float64[]
+        y_target = Float64[]
+        overlay_transform = (lon, lat) -> wgs84_to_target(Float64(lon), Float64(lat))
+        xy_to_latlon = (xv, yv) -> target_to_wgs84(Float64(xv), Float64(yv))
     end
-    xy_to_latlon = (x_target_val, y_target_val) -> begin
-        lon_aligned, lat_aligned = target_to_wgs84(Float64(x_target_val), Float64(y_target_val))
-        lon = lon_aligned - Float64(shiftlon)
-        lat = lat_aligned - Float64(shiftlat)
-        return lon, lat
-    end
 
-    M_target = (
-        A = permutedims(M.A, (2, 1, 3)),
-        cx = x_target,
-        cy = y_target,
-        cz = M.cz
-    )
+    M_target = M === nothing ? nothing :
+        (A = permutedims(M.A, (2, 1, 3)), cx = x_target, cy = y_target, cz = M.cz)
 
+    # ── Model volumes ────────────────────────────────────────────────────
+    # With an MT mesh present the other methods are resampled onto its core cells, so
+    # the properties share one grid and compare cell for cell. Without one, each file is
+    # gridded on axes taken from its own points.
     function load_local_mt_aligned_volume(path::AbstractString)
         voxel = load_density_volume(path)
         ix_core = core_indices(M.cx; tol = pad_tolerance)
@@ -2836,23 +2926,88 @@ function main()
         )
     end
 
-    density_target = nothing
-    _step!("Loading density volume")
-    if isfile(density_file)
+    # `longitude latitude elevation value` point files. The reader reprojects them into
+    # `target_crs`, working the source CRS out from the coordinates when the file does
+    # not state one, and the cloud is then resampled onto the scene's cells.
+    function load_point_volume(path::AbstractString, kind::Symbol, units::AbstractString)
+        session = TerraScope.ImportSession()
+        TerraScope.set_project_crs!(session, target_crs)
+        layer = TerraScope.import_layer!(session, path,
+            TerraScope.ImportOptions(format = :xyz, kind = kind, units = units))
+        points = layer.data::TerraScope.ImportedPoints
+        if M_target === nothing
+            cx, cy, elevations = TerraScope.axes_from_points(points)
+            cz = filter(<=(Float64(max_depth)), sort(-elevations))
+        else
+            cx = x_target[core_indices(M.cx; tol = pad_tolerance)]
+            cy = y_target[core_indices(M.cy; tol = pad_tolerance)]
+            cz = M.cz[z_indices_for_max_depth(M.cz, Float64(max_depth))]
+        end
+        isempty(cz) && error("No cells fall inside the $(max_depth) m depth limit.")
+        A, coverage = TerraScope.resample_points_to_axes(points, cx, cy, -cz)
+        coverage < 0.02 && @warn "Only $(round(100 * coverage, digits = 1))% of the cells got a point from $(basename(path)); check that it covers the same area as the model."
+        return (A = A, cx = cx, cy = cy, cz = cz, name = splitext(basename(path))[1])
+    end
+
+    function load_model_volume(path::AbstractString, kind::Symbol, units::AbstractString)
+        volume = lowercase(splitext(path)[2]) == ".xyz" ? load_point_volume(path, kind, units) :
+            (M_target === nothing ? load_project_crs_volume(path) : load_local_mt_aligned_volume(path))
+        # Density is configured and read in kg/m^3 but displayed in g/cc throughout.
+        kind === :density || return volume
+        return (A = volume.A ./ 1000.0, cx = volume.cx, cy = volume.cy, cz = volume.cz, name = volume.name)
+    end
+
+    loaded_volumes = Dict{Symbol, Any}()
+    for entry in model_inputs
+        entry.kind === :resistivity && continue
+        _step!("Loading $(entry.method) model")
+        isempty(entry.model) && continue
+        if !isfile(entry.model)
+            @warn "$(entry.method) model not found; proceeding without it." path = entry.model
+            continue
+        end
+        if !georeferenced
+            @warn "$(entry.method) model skipped: the scene is in the MT model's local coordinates, which a georeferenced file cannot be placed in."
+            continue
+        end
         try
-            density_target = load_local_mt_aligned_volume(density_file)
+            loaded_volumes[entry.kind] = load_model_volume(entry.model, entry.kind, entry.units)
         catch err
-            @warn "Failed to load density voxel file; proceeding without density volume." exception=(err, catch_backtrace())
+            @warn "Failed to load the $(entry.method) model; proceeding without it." exception = (err, catch_backtrace())
         end
     end
 
-    susceptibility_target = nothing
-    _step!("Loading susceptibility volume")
-    if isfile(susceptibility_file)
+    # ── Measured data ────────────────────────────────────────────────────
+    # What "Show Data" draws for each property: the MT site locations, and the survey
+    # points behind a gravity or magnetic model. An MT data file georeferences its model
+    # as well; the point-file methods carry their own coordinates already.
+    data_layers = Dict{Symbol, Any}()
+    _step!("Loading measured data")
+    if d !== nothing
+        data_layers[:resistivity] = (name = "MT sites", x = station_x, y = station_y,
+            z = -collect(Float64, d.z), values = nothing, colorrange = (0.0, 1.0))
+    end
+    for entry in model_inputs
+        entry.kind === :resistivity && continue
+        isempty(entry.data) && continue
+        if !isfile(entry.data)
+            @warn "$(entry.method) data not found; proceeding without it." path = entry.data
+            continue
+        end
+        if !georeferenced
+            @warn "$(entry.method) data skipped: the scene is in the MT model's local coordinates."
+            continue
+        end
         try
-            susceptibility_target = load_local_mt_aligned_volume(susceptibility_file)
+            session = TerraScope.ImportSession()
+            TerraScope.set_project_crs!(session, target_crs)
+            layer = TerraScope.import_layer!(session, entry.data,
+                TerraScope.ImportOptions(format = :xyz, kind = entry.kind, units = entry.units))
+            points = layer.data::TerraScope.ImportedPoints
+            data_layers[entry.kind] = (name = "$(entry.method) data", x = points.x, y = points.y,
+                z = points.z, values = points.values, colorrange = layer.colorrange)
         catch err
-            @warn "Failed to load susceptibility voxel file; proceeding without susceptibility volume." exception=(err, catch_backtrace())
+            @warn "Failed to load the $(entry.method) data; proceeding without it." exception = (err, catch_backtrace())
         end
     end
 
@@ -2877,20 +3032,58 @@ function main()
         end
     end
 
+    # ── Primary volume ───────────────────────────────────────────────────
+    # The scene is laid out around one volume: the MT model when there is one, else the
+    # first other method that loaded. With nothing at all the viewer opens on an empty
+    # box covering whatever else was configured, so the controls stay consistent.
+    primary_kind = :resistivity
+    primary_name = "Resistivity"
+    primary_logscale = log10_scale
+    primary_volume = M_target
+    if primary_volume === nothing
+        for entry in model_inputs
+            volume = pop!(loaded_volumes, entry.kind, nothing)
+            volume === nothing && continue
+            primary_kind, primary_name, primary_logscale, primary_volume =
+                entry.kind, volume.name, false, volume
+            break
+        end
+    end
+    primary_available = primary_volume !== nothing
+    if !primary_available
+        xlim, ylim = _blank_scene_extent(seismic_curtain, shapefile_layers,
+            overlay_transform, overlay_auto_reproject_to_wgs84)
+        primary_name = "No model"
+        primary_logscale = false
+        primary_volume = (
+            A = fill(NaN, 4, 4, 4),
+            cx = collect(range(xlim[1], xlim[2]; length = 4)),
+            cy = collect(range(ylim[1], ylim[2]; length = 4)),
+            cz = collect(range(10.0, min(Float64(max_depth), 10_000.0); length = 4)),
+        )
+    end
+    primary_range = !primary_available ? nothing :
+        (primary_kind === :resistivity ? resistivity_range : getfield(display_ranges, primary_kind))
+
     _step!("Building 3D scene")
-    fig, parts = modem_3d_viewer_crosssections(M_target;
-        density_model = density_target,
-        susceptibility_model = susceptibility_target,
-        log10scale = log10_scale,
+    fig, parts = modem_3d_viewer_crosssections(primary_volume;
+        primary_kind = primary_kind,
+        primary_name = primary_name,
+        primary_available = primary_available,
+        density_model = get(loaded_volumes, :density, nothing),
+        susceptibility_model = get(loaded_volumes, :susceptibility, nothing),
+        log10scale = primary_logscale,
         cmap = colormap,
         withPadding = show_padding,
         max_depth = max_depth,
         pad_tol = pad_tolerance,
-        resistivity_range = resistivity_range,
+        resistivity_range = primary_range,
         volume_display_ranges = (
             density = display_ranges.density,
             susceptibility = display_ranges.susceptibility,
         ),
+        overlays = georeferenced ? shapefile_layers : empty(shapefile_layers),
+        data_layers = data_layers,
         overlay_transform = overlay_transform,
         north_axis = :y,
         xy_to_latlon = xy_to_latlon,
@@ -2900,6 +3093,11 @@ function main()
         show_seismic_model_section_default = show_seismic_model_section,
         scene_only_default = show_only_3d_scene
     )
+
+    if !open_window
+        _step!("Scene built (window suppressed)"; done = true)
+        return fig, parts
+    end
 
     _step!("Opening viewer")
     screen = display_figure(fig; fullscreen = open_fullscreen)

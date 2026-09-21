@@ -1,3 +1,22 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  TerraScope — launcher.  This is the only file you edit.
+#
+#  1  INPUTS      the files to load, by method.  Absolute paths.  "" = not used.
+#  2  SHAPEFILES  linework, each with its own colour, width and transparency.
+#  3  SETTINGS    display, view, CRS, seismic, overlay, isosurface.
+#
+#  Every input is optional:
+#    · nothing configured          → an empty 3D scene
+#    · MT_model only               → the model in its own local coordinates
+#    · MT_model + MT_data          → georeferenced into the CRS in section 3
+#    · gravity/magnetic models     → resampled onto the MT cells when there is an MT
+#                                    model, otherwise gridded on their own coordinates
+#    · gravity/magnetic data       → drawn over the model at its own elevation
+#
+#  Run:  julia --project=. examples/launch_TerraScope3D.jl   (or Launch-TerraScope.cmd)
+#  Anything left out of section 3 keeps its default from examples/TerraScope3D.jl.
+# ══════════════════════════════════════════════════════════════════════════════
+
 using Pkg
 Pkg.activate(joinpath(@__DIR__, ".."))
 
@@ -5,67 +24,94 @@ println("TerraScope launcher started.")
 println("Preparing packages and viewer code. Startup progress will continue below...")
 flush(stdout)
 
-demo_root = joinpath(dirname(@__DIR__), "Data", "demo")                     # Root folder for the bundled demo assets; point elsewhere to launch a different project.
-
 const TERRASCOPE_LAUNCH_CONFIG = (
-	paths = (                                                               # File inputs; replace these with your own project files for a different area.
-		data_root = demo_root,                                               # Convenience root used to keep the file paths below readable.
-		model_file = joinpath(demo_root, "I_NLCG_140.rho"),                 # Main ModEM/WS-style resistivity model.
-		data_file = joinpath(demo_root, "I_NLCG_140.dat"),                  # ModEM data file used for georeferencing and alignment.
-		shapefile_path = joinpath(demo_root, "gis", "Tnew", "Tnew.shp"), 	# Optional GIS linework draped on top of the model.
-		density_file = joinpath(demo_root, "Density3D.vox"),                # Optional density voxel volume.
-		susceptibility_file = joinpath(demo_root, "Susceptibility3D.vox"),  # Optional susceptibility voxel volume.
-		seismic_file = joinpath(demo_root, "fire_updated.sgy"),             # Optional SEG-Y line used for seismic section and model drape.
+
+	# ── 1. INPUTS ────────────────────────────────────────────────────────────────
+	# `_model` is a 3D volume, `_data` is the measured dataset for the same method.
+	# MT models read ModEM/WS `.rho`; the others read `.xyz` point files
+	# (`longitude latitude elevation value`, or easting/northing in a projected CRS)
+	# and TerraScope `.vox` volumes.
+	inputs = (
+		#MT_model       = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\I_NLCG_140.rho",
+		#MT_data        = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\I_NLCG_140.dat",
+		gravity_model  = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\density.xyz",
+		gravity_data   = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\gravity.xyz",
+		magnetic_model = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\susceptibility.xyz",
+		magnetic_data  = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\magnetic.xyz",
+		seismic_data   = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\fire_updated.sgy",
 	),
-	model = (                                                               # Controls for the 3D resistivity/voxel rendering and manual sections.
-		log10_scale = true,                                                  # `true` shows resistivity as log10(rho); usually preferred for MT models.
-		colormap = :Spectral,                                                # Makie colormap used for the active volume.
-		max_depth_m = 50000.0,                                               # Viewer depth cutoff in meters; deeper cells are not shown/exported.
-		show_padding = false,                                                # `false` hides padding cells and shows only the core model.
-		pad_tolerance = 0.2,                                                 # Tolerance used to detect which edge cells are padding.
-		section_samples_along = 360,                                         # Along-section samples for manual and seismic-following sections; higher is smoother but slower.
-		display_ranges = (                                                   # Optional fixed display ranges; use `nothing` to auto-estimate.
-			resistivity = (1.0, 4.0),                                         # For `log10_scale = true`, these are log10(ohm.m) values.
-			density = nothing,                                                # Auto-estimate density color range.
-			susceptibility = nothing,                                         # Auto-estimate susceptibility color range.
-		),
+
+	# ── 2. SHAPEFILES ────────────────────────────────────────────────────────────
+	# One line per file: path, then how it is drawn. Add as many as you like.
+	shapefiles = [
+		(path = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\gis\Tnew\Tnew.shp", color = :black, width = 1.5, alpha = 1.0),
+	],
+
+	# ── 3. SETTINGS ──────────────────────────────────────────────────────────────
+	model = (                                                # Volume rendering and sections.
+		log10_scale = true, colormap = :Spectral,            # log10(rho) is the usual MT choice.
+		max_depth_m = 50000.0,                               # Depth cut-off; deeper cells are dropped.
+		show_padding = false, pad_tolerance = 0.2,           # Hide ModEM padding cells, and how they are detected.
+		section_samples_along = 360,                         # Samples along a section; higher is smoother, slower.
+		display_ranges = (resistivity = (1.0, 4.0), density = nothing, susceptibility = nothing),
+	),                                                       # `nothing` auto-estimates; resistivity is log10(ohm.m) here.
+
+	view = (                                                 # Window layout and startup camera.
+		open_fullscreen = false, show_only_3d_scene = true,  # Start 3D-only; `false` also shows the control and selector panels.
+		show_outer_ticks_axis = true, export_png_scale = 4,  # XYZ tick annotations, and PNG export resolution multiplier.
+		default_view_direction = (-0.15, -1.05, 0.72), default_view_scale = 1.12,   # Looks north on open.
 	),
-	view = (                                                                # Startup layout and camera behaviour.
-		open_fullscreen = false,                                              # Open the Makie window in fullscreen on launch.
-		show_only_3d_scene = true,                                          # `true` starts in 3D-only mode; `false` starts with controls and selector panel.
-		show_outer_ticks_axis = true,                                        # Draw custom XYZ tick annotations around the 3D scene.
-		export_png_scale = 4,                                                # Export resolution multiplier for PNG outputs.
-		default_view_direction = (-0.15, -1.05, 0.72),                       # Default camera direction for the initial 3D view.
-		default_view_scale = 1.12,                                           # Default camera zoom/scale at startup.
+
+	coordinate = (                                           # Must be projected and metric — never EPSG:4326.
+		target_crs = "EPSG:3067", selector_show_latlon_ticks = true,
 	),
-	coordinate = (                                                          # Coordinate-system controls for the 3D scene and bottom selector map.
-		target_crs = "EPSG:3067",                                           # Target projected CRS used for plotting; do not set this to `EPSG:4326` because the viewer assumes metric XY coordinates.
-		selector_show_latlon_ticks = true,                                 # `true` shows WGS84 lat/lon labels on the selector while keeping the scene itself in a projected CRS.
+
+	seismic = (                                              # SEG-Y curtain and model drape.
+		show = true, display_mode = :envelope,               # `:original` for signed amplitudes.
+		trace_xy = :source,                                  # Which header coordinates locate the traces.
+		max_traces = 1400, max_samples = 1200,               # Caps that keep large files interactive.
+		sample_spacing_m = 12.5, clip_quantile = 0.995,      # Trace resampling distance, and amplitude clipping.
+		show_model_section = false,                          # Start with the model draped along the line.
 	),
-	seismic = (                                                            # SEG-Y loading and rendering options.
-		show = true,                                                        # Master on/off switch for loading any seismic product at startup.
-		display_mode = :envelope,                                           # `:original` uses signed amplitudes; `:envelope` uses the trace envelope.
-		trace_xy = :source,                                                 # Which SEG-Y coordinates to use for map location; `:source` is common.
-		max_traces = 1400,                                                  # Downsampling cap for traces to keep large SEG-Y files interactive.
-		max_samples = 1200,                                                 # Downsampling cap for samples to keep large SEG-Y files interactive.
-		sample_spacing_m = 12.5,                                            # Approximate distance between resampled seismic traces in meters.
-		clip_quantile = 0.995,                                              # Clips very large amplitudes for a cleaner seismic image.
-		show_model_section = false,                                          # Startup state for the model draped along the seismic line.
+
+	overlay = (                                              # Annotations and survey styling.
+		show_north_arrow = true, show_scale_bar = true,
+		line_color = :black, line_width = 1.5,               # Fallback for a shapefile entry that omits them.
+		survey_colormap = :viridis, survey_markersize = 5,   # How `_data` point files are drawn.
 	),
-	overlay = (                                                            # GIS overlay styling and corner annotations.
-		show_north_arrow = true,                                            # Draw compass arrow in the 3D scene.
-		show_scale_bar = true,                                              # Draw scale bar in the 3D scene.
-		line_color = :black,                                                # Shapefile/polyline overlay color.
-		line_width = 1.5,                                                   # Shapefile/polyline overlay line width.
-	),
-	isosurface = (                                                         # Optional iso-volume generation settings used by the UI.
-		enabled = false,                                                    # Build an isosurface immediately on launch.
-		alpha = 0.72,                                                       # Initial iso opacity used by the UI controls.
-		stride = 1,                                                         # Subsampling step for iso construction; higher is faster but coarser.
-		color_by_depth = false,                                             # `true` colors the iso by depth instead of the active property values.
+
+	isosurface = (                                           # Starting values for the iso controls.
+		enabled = false, alpha = 0.72, stride = 1, color_by_depth = false,
 	),
 )
 
-include(joinpath(@__DIR__, "TerraScope3D.jl"))                           	# Load the main TerraScope viewer implementation.
+# ── Pre-flight ────────────────────────────────────────────────────────────────
+# Report what was found before the slow work starts, so a wrong path shows up now
+# instead of as a silently missing layer ten steps later.
 
-main()
+using TerraScope
+
+let inputs = TERRASCOPE_LAUNCH_CONFIG.inputs, shapefiles = TERRASCOPE_LAUNCH_CONFIG.shapefiles
+	entries = vcat([(String(name), getfield(inputs, name)) for name in keys(inputs)],
+		[("shapefile", entry.path) for entry in shapefiles])
+	configured = [path for (_, path) in entries if !isempty(path)]
+
+	TerraScope.print_banner(; data_root = isempty(configured) ? "" : dirname(first(configured)))
+	for (name, path) in entries
+		label = rpad(replace(name, '_' => ' '), 16)
+		if isempty(path)
+			println("  \e[90m·  $(label)not used\e[0m")
+		elseif isfile(path)
+			println("  \e[32m✓\e[0m  \e[90m$(label)$(basename(path))\e[0m")
+		else
+			println("  \e[31m✗  $(label)not found: $(path)\e[0m")
+		end
+	end
+	isempty(configured) && println("  \e[90m·  nothing configured — TerraScope will open an empty 3D scene\e[0m")
+	println()
+	flush(stdout)
+end
+
+include(joinpath(@__DIR__, "TerraScope3D.jl"))                              # Load the main TerraScope viewer.
+
+main(; show_banner = false)                                                 # The banner was already printed by the pre-flight check.

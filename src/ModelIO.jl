@@ -10,6 +10,7 @@ function read_mackie3d_model(fname::AbstractString, block::Bool = true)
         i += 1
     end
 
+    i <= length(lines) || error("Empty ModEM model: $fname")
     header = strip(lines[i])
     i += 1
     tokens = split(header)
@@ -20,8 +21,10 @@ function read_mackie3d_model(fname::AbstractString, block::Bool = true)
             push!(ints, parsed)
         end
     end
+    length(ints) >= 4 || error("Invalid ModEM dimensions: $header")
     nx, ny, nz, nz_air = ints[1], ints[2], ints[3], ints[4]
-    scale_type = occursin("LOGE", header) ? "LOGE" : "LINEAR"
+    all(>(0), (nx,ny,nz)) || error("ModEM dimensions must be positive")
+    scale_type = occursin("LOGE", header) ? "LOGE" : occursin("LOG10", header) ? "LOG10" : "LINEAR"
 
     function take_floats!(n::Int)
         collected = Float64[]
@@ -35,6 +38,7 @@ function read_mackie3d_model(fname::AbstractString, block::Bool = true)
             end
             i += 1
         end
+        length(collected) == n || error("Truncated ModEM model: expected $n numbers, got $(length(collected))")
         return collected
     end
 
@@ -119,6 +123,8 @@ function load_model_modem(path::AbstractString)
 
     if scale_type == "LOGE"
         model.A = exp.(model.A)
+    elseif scale_type == "LOG10"
+        model.A = 10.0 .^ model.A
     end
 
     model.y = vcat(0.0, cumsum(model.dy)) .+ model.origin[2]

@@ -44,10 +44,16 @@ end
 
 function load_seismic_curtain_from_segy(path::AbstractString; trace_xy::Symbol = :source, display_mode::Symbol = :original, sample_spacing_m::Real = 12.5, top_z_m::Real = 0.0, max_traces::Int = 1400, max_samples::Int = 1200, clip_quantile::Real = 0.995)
     isfile(path) || error("SEG-Y file not found: $path")
+    trace_xy in (:source,:group) || error("Trace coordinates must be source or group")
+    display_mode in (:original,:envelope) || error("Display mode must be original or envelope")
+    isfinite(sample_spacing_m) && sample_spacing_m > 0 || error("Sample spacing must be positive")
+    isfinite(top_z_m) || error("Top depth must be finite")
+    max_traces >= 2 && max_samples >= 2 || error("Seismic sample limits must be at least 2")
     segy = segy_read(path)
-    data = Float32.(segy.data)
+    data = segy.data # Downsample before converting; avoid duplicating the entire survey.
     headers = segy.traceheaders
     n_samples, n_traces = size(data)
+    n_samples >= 2 && n_traces >= 2 || error("Seismic curtain requires at least two traces and samples")
     length(headers) == n_traces || error("SEG-Y trace header count mismatch")
 
     trace_idx = unique(round.(Int, range(1, n_traces; length = min(max_traces, n_traces))))

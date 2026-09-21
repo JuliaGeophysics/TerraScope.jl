@@ -72,13 +72,56 @@ function _export_sections(volume::ScalarVolume, section_paths::Vector{Vector{Tup
     return exported
 end
 
-function _display_figure(fig; fullscreen::Bool = false)
-    screen = fullscreen ? GLMakie.Screen(; fullscreen = true, float = false, focus_on_show = true) : GLMakie.Screen(; focus_on_show = true)
-    display(screen, fig)
-    return screen
+const _TERRASCOPE_LOGO = raw"""
+▄▄▄▄▄▄▄▄▄                       ▄▄▄▄▄▄▄                         
+▀▀▀███▀▀▀                      █████▀▀▀                         
+   ███ ▄█▀█▄ ████▄ ████▄  ▀▀█▄  ▀████▄  ▄████ ▄███▄ ████▄ ▄█▀█▄ 
+   ███ ██▄█▀ ██ ▀▀ ██ ▀▀ ▄█▀██    ▀████ ██    ██ ██ ██ ██ ██▄█▀ 
+   ███ ▀█▄▄▄ ██    ██    ▀█▄██ ███████▀ ▀████ ▀███▀ ████▀ ▀█▄▄▄ 
+                                                    ██          
+                                                    ▀▀           """
+
+"""Startup banner shared by the launcher and the TerraScope3D viewer."""
+function print_banner(; data_root::AbstractString = "")
+    println()
+    println("  \e[90m┌──────────────────────────────────────────────────────┐\e[0m")
+    println("\e[36m$(_TERRASCOPE_LOGO)\e[0m")
+    println("  \e[90m└──────────────────────────────────────────────────────┘\e[0m")
+    println()
+    println("  \e[3m\e[90mLet's look at diverse geophysical models together...\e[0m")
+    println("  \e[90mFeedback / Issues → pankaj.mishra@gtk.fi\e[0m")
+    isempty(data_root) || println("  \e[90mData directory    → $(data_root)\e[0m")
+    println()
+    flush(stdout)
+    return nothing
 end
 
-function launch_viewer(; data_root::AbstractString = default_data_dir(), max_depth::Union{Nothing, Real} = 50_000.0, with_padding::Bool = false, open_fullscreen::Bool = false, block::Bool = !isinteractive(), active_volume::Symbol = :resistivity)
+# File IO and tests do not need an OpenGL context. Load the window backend only when
+# a window is requested. Callers must cross the resulting world-age boundary before
+# touching any GLMakie method (`Screen`, `isopen`, `wait`, ...).
+function _ensure_glmakie()
+    isdefined(@__MODULE__, :GLMakie) || (@eval import GLMakie)
+    return nothing
+end
+
+function _display_figure(fig; fullscreen::Bool = false)
+    _ensure_glmakie()
+    return Base.invokelatest() do
+        GLMakie.activate!()
+        screen = fullscreen ? GLMakie.Screen(; fullscreen = true, float = false, focus_on_show = true) : GLMakie.Screen(; focus_on_show = true)
+        display(screen, fig)
+        screen
+    end
+end
+
+# Thin wrapper: load the backend first, then run the whole viewer body in the new
+# world so that `wait(screen)` and friends see GLMakie's methods.
+function launch_viewer(; kwargs...)
+    _ensure_glmakie()
+    return Base.invokelatest(_launch_viewer; kwargs...)
+end
+
+function _launch_viewer(; data_root::AbstractString = default_data_dir(), max_depth::Union{Nothing, Real} = 50_000.0, with_padding::Bool = false, open_fullscreen::Bool = false, block::Bool = !isinteractive(), active_volume::Symbol = :resistivity)
     bundle = load_dataset_bundle(data_root; with_padding = with_padding, max_depth = max_depth)
     bundle.resistivity === nothing && error("Resistivity volume is required")
 
@@ -104,8 +147,8 @@ function launch_viewer(; data_root::AbstractString = default_data_dir(), max_dep
 
     show_map_slice = Observable(false)
     show_full_layout = Observable(true)
-    pending_points = Observable(GLMakie.Point2f[])
-    selector_section_lines = Observable(GLMakie.Point2f[])
+    pending_points = Observable(CairoMakie.Point2f[])
+    selector_section_lines = Observable(CairoMakie.Point2f[])
     section_paths = Observable(Vector{Vector{Tuple{Float64, Float64}}}())
     active_section = Observable(0)
     export_status = Observable("No exports yet")
@@ -166,7 +209,7 @@ function launch_viewer(; data_root::AbstractString = default_data_dir(), max_dep
     heatmap!(selector_ax, edges_from_centers(current_volume().x), edges_from_centers(current_volume().y), selector_slice; colormap = _volume_colormap(current_volume()), colorrange = current_range())
     lines!(selector_ax, selector_section_lines; color = :black, linewidth = 1.5)
     scatter!(selector_ax, pending_points; color = :red, markersize = 8)
-    pending_line = @lift length($pending_points) >= 2 ? $pending_points : GLMakie.Point2f[]
+    pending_line = @lift length($pending_points) >= 2 ? $pending_points : CairoMakie.Point2f[]
     lines!(selector_ax, pending_line; color = :red, linewidth = 2, linestyle = :dash)
 
     for shp in bundle.shapefiles
@@ -201,10 +244,10 @@ function launch_viewer(; data_root::AbstractString = default_data_dir(), max_dep
     end
 
     function update_selector_lines!()
-        pts = GLMakie.Point2f[]
+        pts = CairoMakie.Point2f[]
         for path in section_paths[]
-            append!(pts, GLMakie.Point2f[(p[1], p[2]) for p in path])
-            push!(pts, GLMakie.Point2f(NaN, NaN))
+            append!(pts, CairoMakie.Point2f[(p[1], p[2]) for p in path])
+            push!(pts, CairoMakie.Point2f(NaN, NaN))
         end
         selector_section_lines[] = pts
     end
@@ -274,7 +317,7 @@ function launch_viewer(; data_root::AbstractString = default_data_dir(), max_dep
         paths = copy(section_paths[])
         push!(paths, [(Float64(p[1]), Float64(p[2])) for p in pending_points[]])
         section_paths[] = paths
-        pending_points[] = GLMakie.Point2f[]
+        pending_points[] = CairoMakie.Point2f[]
         update_active_section!(length(paths))
         update_selector_lines!()
         return true
@@ -301,7 +344,7 @@ function launch_viewer(; data_root::AbstractString = default_data_dir(), max_dep
                 return
             end
             pts = copy(pending_points[])
-            push!(pts, GLMakie.Point2f(x_click, y_click))
+            push!(pts, CairoMakie.Point2f(x_click, y_click))
             pending_points[] = pts
         elseif event.button == Mouse.right && event.action == Mouse.press
             if add_section_from_pending!()
@@ -334,7 +377,7 @@ function launch_viewer(; data_root::AbstractString = default_data_dir(), max_dep
         end
     end
     on(btn_clear_points.clicks) do _
-        pending_points[] = GLMakie.Point2f[]
+        pending_points[] = CairoMakie.Point2f[]
     end
     on(btn_undo.clicks) do _
         paths = copy(section_paths[])
@@ -369,7 +412,7 @@ function launch_viewer(; data_root::AbstractString = default_data_dir(), max_dep
             iso_triangles[] = triangles
             if !isempty(triangles)
                 vertices, faces = triangles_to_vertices_faces(triangles)
-                mesh = GLMakie.GeometryBasics.Mesh(vertices, faces)
+                mesh = CairoMakie.GeometryBasics.Mesh(vertices, faces)
                 colors = iso_color_by_depth[] ? [-point[3] for point in vertices] : fill(0.5 * (_physical_to_internal(volume, lo) + _physical_to_internal(volume, hi)), length(vertices))
                 push!(iso_plots, mesh!(ax3, mesh; color = colors, colormap = iso_color_by_depth[] ? :plasma : _volume_colormap(volume), transparency = true, alpha = 0.55))
                 export_status[] = "Isovolume created from $selected selected cells"
