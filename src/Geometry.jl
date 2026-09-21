@@ -224,14 +224,14 @@ function build_range_volume_triangles(xv, yv, zv, values, vmin::Real, vmax::Real
 end
 
 function triangles_to_vertices_faces(triangles::Vector{NTuple{3, NTuple{3, Float64}}})
-    vertices = GLMakie.Point3f[]
-    faces = GLMakie.TriangleFace{Int32}[]
+    vertices = CairoMakie.Point3f[]
+    faces = CairoMakie.TriangleFace{Int32}[]
     for triangle in triangles
         base = length(vertices) + 1
-        push!(vertices, GLMakie.Point3f(triangle[1][1], triangle[1][2], triangle[1][3]))
-        push!(vertices, GLMakie.Point3f(triangle[2][1], triangle[2][2], triangle[2][3]))
-        push!(vertices, GLMakie.Point3f(triangle[3][1], triangle[3][2], triangle[3][3]))
-        push!(faces, GLMakie.TriangleFace(Int32(base), Int32(base + 1), Int32(base + 2)))
+        push!(vertices, CairoMakie.Point3f(triangle[1][1], triangle[1][2], triangle[1][3]))
+        push!(vertices, CairoMakie.Point3f(triangle[2][1], triangle[2][2], triangle[2][3]))
+        push!(vertices, CairoMakie.Point3f(triangle[3][1], triangle[3][2], triangle[3][3]))
+        push!(faces, CairoMakie.TriangleFace(Int32(base), Int32(base + 1), Int32(base + 2)))
     end
     return vertices, faces
 end

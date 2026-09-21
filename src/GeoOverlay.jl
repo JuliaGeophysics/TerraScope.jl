@@ -48,7 +48,11 @@ function shapefile_segments(shapefile_path::AbstractString; auto_reproject_to_wg
     inside(x, y) = (x >= xlo && x <= xhi && y >= ylo && y <= yhi)
 
     function collect_recursive!(coords)
-        if coords isa AbstractVector && !isempty(coords)
+        if is_xy(coords)
+            x0, y0 = coord_transform(Float64(coords[1]), Float64(coords[2]))
+            x, y = post_transform(x0, y0)
+            inside(x,y) && push!(segments, [(x,y)])
+        elseif (coords isa AbstractVector || coords isa Tuple) && !isempty(coords)
             first_item = first(coords)
             if is_xy(first_item)
                 segment = Tuple{Float64, Float64}[]
