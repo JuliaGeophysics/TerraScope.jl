@@ -1,0 +1,24 @@
+/* Override default DocumenterVitepress styles here.
+   This file is loaded after style.css, so rules here take precedence. */
+
+/* Single line spacing for body text, lists, tables and code */
+.vp-doc p,
+.vp-doc li,
+.vp-doc td,
+.vp-doc th,
+.vp-doc blockquote,
+.vp-doc div[class*='language-'] code,
+.VPFeature .details,
+.VPHero .tagline {
+  line-height: 1.25;
+}
+
+.vp-doc p,
+.vp-doc ul,
+.vp-doc ol {
+  margin: 8px 0;
+}
+
+.vp-doc li + li {
+  margin-top: 2px;
+}
