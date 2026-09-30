@@ -127,7 +127,7 @@ function main()
     # detects degrees from the coordinates and converts them into the project CRS.
     grid = georeferenced_demo_grid(model_path, data_path)
     to_wgs84 = Proj.Transformation(DEMO_CRS, "EPSG:4326"; always_xy = true)
-    println("Wrote WGS84 lon/lat point files (load them with the Import button):")
+    println("Wrote WGS84 lon/lat point files (set them as launcher inputs):")
 
     n = write_xyz_model(joinpath(demo_root, "density.xyz"), grid, to_wgs84, synthetic_density;
         header = "Synthetic density model. WGS84 lon/lat, elevation in metres, density in kg/m^3.")

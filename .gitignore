@@ -10,3 +10,9 @@
 
 # Local datasets and demo assets should never be committed
 /Data/
+# Docs build artifacts
+docs/build/
+docs/site/
+docs/node_modules/
+docs/package-lock.json
+docs/Manifest.toml

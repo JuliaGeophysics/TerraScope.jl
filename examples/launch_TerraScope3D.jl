@@ -32,8 +32,8 @@ const TERRASCOPE_LAUNCH_CONFIG = (
 	# (`longitude latitude elevation value`, or easting/northing in a projected CRS)
 	# and TerraScope `.vox` volumes.
 	inputs = (
-		#MT_model       = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\I_NLCG_140.rho",
-		#MT_data        = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\I_NLCG_140.dat",
+		MT_model       = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\I_NLCG_140.rho",
+		MT_data        = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\I_NLCG_140.dat",
 		gravity_model  = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\density.xyz",
 		gravity_data   = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\gravity.xyz",
 		magnetic_model = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\susceptibility.xyz",

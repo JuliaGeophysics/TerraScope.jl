@@ -105,11 +105,6 @@ end
     for j in 1:2,i in 1:2
         @test (X[i,j],Y[i,j]) == trans([140.,141.][i],[-21.,-20.][j])
     end
-    grid = ImportedGrid(X,Y,[-10.,-20.],reshape(Float64.(1:8),2,2,2))
-    for axis in (:xy,:xz,:yz)
-        x,y,z,c = TerraScope._grid_slice(grid,axis,0.5)
-        @test size(x) == size(y) == size(z) == size(c) == (2,2)
-    end
 end
 
 @testset "Seismic loader compatibility" begin
@@ -178,50 +173,6 @@ end
         @test layer.data.Y[1,1] ≈ expected[2]
         @test layer.data.z == [100.]
         @test isnan(layer.data.values[2,2,1])
-    end
-end
-
-@testset "Import GUI callbacks without a display" begin
-    TerraScope.CairoMakie.activate!()
-    viewer = launch_import_viewer(;display_window=false,block=false)
-    @test isempty(viewer.session.layers)
-    viewer.controls.import_button.clicks[] += 1
-    @test isempty(viewer.session.target_crs)
-    TerraScope._set_import_text!(viewer.controls.crs_box,"EPSG:28354")
-    viewer.controls.set_crs.clicks[] += 1
-    @test viewer.session.target_crs == "EPSG:28354"
-    mktempdir() do root
-        path = joinpath(root,"model.xyz")
-        write(path,"500000 7700000 -10 100\n500100 7700100 -20 200\n")
-        dialog = TerraScope._open_import_dialog(viewer.session,viewer.add_layer_to_scene!;display_window=false)
-        dialog.controls.format_menu.i_selected[] = 2
-        TerraScope._set_import_text!(dialog.controls.path_box,path)
-        TerraScope._set_import_text!(dialog.controls.source_box,"EPSG:28354")
-        dialog.controls.load_button.clicks[] += 1
-        @test timedwait(()->!dialog.loading[],120) == :ok
-        @test length(viewer.session.layers) == 1
-        @test length(viewer.plots) == 1
-        @test startswith(dialog.status[],"Imported")
-        oldplot = only(viewer.plots[1])
-        viewer.controls.visible_button.clicks[] += 1
-        @test !oldplot.visible[]
-        viewer.controls.visible_button.clicks[] += 1
-        @test oldplot.visible[]
-        # A failed import must retain the first layer and its plot.
-        TerraScope._set_import_text!(dialog.controls.path_box,joinpath(root,"missing.xyz"))
-        dialog.controls.load_button.clicks[] += 1
-        @test timedwait(()->!dialog.loading[],30) == :ok
-        @test length(viewer.session.layers) == 1
-        @test only(viewer.plots[1]) === oldplot
-        @test startswith(dialog.status[],"Import failed")
-        rho = joinpath(root,"grid.rho")
-        write_model_modem(rho,fill(100.,2),fill(100.,2),fill(50.,2),reshape(Float64.(1:8),2,2,2),[7700000.,500000.,0.])
-        layer = import_layer!(viewer.session,rho,ImportOptions(format=:modem,source_crs="EPSG:28354"))
-        viewer.add_layer_to_scene!(layer)
-        @test length(viewer.plots) == 2
-        viewer.controls.slice_axis.i_selected[] = 2
-        viewer.controls.apply_slice.clicks[] += 1
-        @test only(viewer.plots[1]) === oldplot # Only active layer redraws.
     end
 end
 

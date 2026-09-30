@@ -19,10 +19,9 @@ include("SyntheticDensity.jl")
 include("DataIO.jl")
 include("GeoOverlay.jl")
 include("Seismic.jl")
-include("Viewer.jl")
+include("Banner.jl")
 include("ImportIO.jl")
 include("RasterImport.jl")
-include("ImportViewer.jl")
 
 export MTModel
 export MTData
@@ -51,8 +50,6 @@ export load_dataset_bundle
 export ImportOptions, ImportSession, ImportedLayer, ImportedGrid, ImportedPoints
 export set_project_crs!, import_layer!, load_import, read_xyz_points, read_ubc_model
 export resample_points_to_axes, axes_from_points
-export launch_viewer
-export launch_import_viewer
 export print_banner
 
 end

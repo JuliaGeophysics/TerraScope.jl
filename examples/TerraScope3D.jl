@@ -420,16 +420,6 @@ function _sanitize_iso_range(vmin::Real, vmax::Real, cmin::Real, cmax::Real)
     return lo, hi
 end
 
-function _lerp_iso_levels(vmin::Real, vmax::Real, nlevels::Int)
-    n = max(1, nlevels)
-    lo = Float64(vmin)
-    hi = Float64(vmax)
-    if n == 1
-        return [0.5 * (lo + hi)]
-    end
-    return collect(range(lo, hi; length = n))
-end
-
 const _CUBE_TETRA = (
     (1, 2, 4, 8),
     (1, 4, 3, 8),
@@ -919,17 +909,6 @@ function plot_shapefile_on_3d!(ax, shapefile_path;
     return segments_count
 end
 
-function nearest_index(vals::AbstractVector{<:Real}, x::Real)
-    i = searchsortedfirst(vals, x)
-    if i <= 1
-        return 1
-    elseif i > length(vals)
-        return length(vals)
-    else
-        return abs(vals[i] - x) < abs(vals[i - 1] - x) ? i : i - 1
-    end
-end
-
 function bracket_index_and_weight(vals::AbstractVector{<:Real}, q::Real)
     n = length(vals)
     if n <= 1
@@ -951,91 +930,6 @@ function bracket_index_and_weight(vals::AbstractVector{<:Real}, q::Real)
     end
     w = (Float64(q) - v0) / (v1 - v0)
     return i0, i1, clamp(w, 0.0, 1.0)
-end
-
-function compute_offset_limits_for_segment(p1::Tuple{Float64, Float64}, p2::Tuple{Float64, Float64},
-    n̂::Tuple{Float64, Float64}, xlim::Tuple{Float64, Float64}, ylim::Tuple{Float64, Float64})
-
-    xmin, xmax = min(xlim[1], xlim[2]), max(xlim[1], xlim[2])
-    ymin, ymax = min(ylim[1], ylim[2]), max(ylim[1], ylim[2])
-
-    function point_limits(px, py)
-        nx, ny = n̂
-
-        lx, hx = if abs(nx) < 1e-12
-            if px < xmin || px > xmax
-                (Inf, -Inf)
-            else
-                (-Inf, Inf)
-            end
-        else
-            t1 = (xmin - px) / nx
-            t2 = (xmax - px) / nx
-            (min(t1, t2), max(t1, t2))
-        end
-
-        ly, hy = if abs(ny) < 1e-12
-            if py < ymin || py > ymax
-                (Inf, -Inf)
-            else
-                (-Inf, Inf)
-            end
-        else
-            t1 = (ymin - py) / ny
-            t2 = (ymax - py) / ny
-            (min(t1, t2), max(t1, t2))
-        end
-
-        return max(lx, ly), min(hx, hy)
-    end
-
-    l1, h1 = point_limits(p1[1], p1[2])
-    l2, h2 = point_limits(p2[1], p2[2])
-    lo = max(l1, l2)
-    hi = min(h1, h2)
-
-    if !isfinite(lo) || !isfinite(hi) || lo >= hi
-        diag_len = hypot(xmax - xmin, ymax - ymin)
-        return -0.25 * diag_len, 0.25 * diag_len
-    end
-
-    return lo, hi
-end
-
-function build_section_surface(xv, yv, zv, R, p1::Tuple{Float64, Float64}, p2::Tuple{Float64, Float64}; nsamp::Int = 360)
-    ns = max(8, nsamp)
-    t = range(0.0, 1.0; length = ns)
-
-    xs = [p1[1] + τ * (p2[1] - p1[1]) for τ in t]
-    ys = [p1[2] + τ * (p2[2] - p1[2]) for τ in t]
-
-    nz = length(zv)
-    X = Matrix{Float64}(undef, ns, nz)
-    Y = Matrix{Float64}(undef, ns, nz)
-    Z = Matrix{Float64}(undef, ns, nz)
-    C = Matrix{Float64}(undef, ns, nz)
-
-    for i in 1:ns
-        ix0, ix1, wx = bracket_index_and_weight(xv, xs[i])
-        iy0, iy1, wy = bracket_index_and_weight(yv, ys[i])
-
-        for k in 1:nz
-            X[i, k] = xs[i]
-            Y[i, k] = ys[i]
-            Z[i, k] = zv[k]
-
-            v00 = R[ix0, iy0, k]
-            v10 = R[ix1, iy0, k]
-            v01 = R[ix0, iy1, k]
-            v11 = R[ix1, iy1, k]
-
-            v0 = (1.0 - wx) * v00 + wx * v10
-            v1 = (1.0 - wx) * v01 + wx * v11
-            C[i, k] = (1.0 - wy) * v0 + wy * v1
-        end
-    end
-
-    return X, Y, Z, C
 end
 
 function sample_polyline(points::Vector{Tuple{Float64, Float64}}, nsamp::Int)
@@ -1610,24 +1504,12 @@ function modem_3d_viewer_crosssections(
     drape_toggle_label(has_drape::Bool, visible::Bool) = !has_drape ? "Drape N/A" : (visible ? "Hide Drape" : "Show Drape")
     seismic_section_toggle_label(has_drape::Bool, visible::Bool) = !has_drape ? "Seismic Section N/A" : (visible ? "Hide Seismic Section" : "Show Seismic Section")
 
-    function set_button_enabled!(btn, enabled::Bool, enabled_label::AbstractString, disabled_label::AbstractString)
-        btn.label[] = enabled ? enabled_label : disabled_label
-        if hasproperty(btn, :buttoncolor)
-            btn.buttoncolor[] = enabled ? :gray92 : :gray78
-        end
-        if hasproperty(btn, :labelcolor)
-            btn.labelcolor[] = enabled ? :black : :gray35
-        end
-        return nothing
-    end
-
     _volume_buttons = Dict{Symbol, Any}()
     _volume_base_labels = Dict{Symbol, String}()
     function highlight_active_volume_button!(active_kind::Symbol)
         for (kind, btn) in _volume_buttons
             is_active = (kind == active_kind)
-            base = get(_volume_base_labels, kind, String(kind))
-            btn.font[] = is_active ? "TeX Gyre Heros Makie Bold" : "TeX Gyre Heros Makie"
+            btn.font[] = is_active ? :bold : :regular
         end
         return nothing
     end
@@ -2832,7 +2714,7 @@ function modem_3d_viewer_crosssections(
 end
 
 # `open_window = false` builds the scene without opening an OpenGL window; used by
-# the headless smoke test in scripts/import_smoketest.jl. `show_banner = false` is
+# the headless smoke test in scripts/startup_smoketest.jl. `show_banner = false` is
 # for callers that already printed it, such as the launcher's pre-flight check.
 function main(; open_window::Bool = true, show_banner::Bool = true)
     show_banner && TerraScope.print_banner(; data_root = data_root)
