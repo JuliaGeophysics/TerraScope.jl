@@ -27,5 +27,4 @@ model, data, seismic and shapefile paths, and adjust the startup settings. On Wi
 Supported inputs, launcher settings, demo data and faster startup are covered in the
 [documentation](https://juliageophysics.com/TerraScope.jl/dev/).
 
-Feedback and issues: [GitHub issues](https://github.com/JuliaGeophysics/TerraScope.jl/issues) or
-pankaj.mishra@gtk.fi.
+Feedback and issues: [GitHub issues](https://github.com/JuliaGeophysics/TerraScope.jl/issues).
