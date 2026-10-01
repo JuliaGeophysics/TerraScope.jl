@@ -1248,12 +1248,27 @@ function clip_seismic_curtain_to_depth(seismic_curtain, min_z::Real)
     )
 end
 
+# GLMakie refuses to display a scene that is still attached to another GLMakie screen
+# (e.g. the hidden one left behind by `colorbuffer`, or a failed fullscreen attempt).
+function _detach_glmakie_screens!(fig)
+    for s in copy(fig.scene.current_screens)
+        s isa GLMakie.Screen || continue
+        try
+            close(s)
+        catch
+        end
+    end
+    filter!(s -> !(s isa GLMakie.Screen), fig.scene.current_screens)
+    return fig
+end
+
 function display_figure(fig; fullscreen::Bool = true)
     # Force first frame render off-screen so window opens with content, not a black flash
     try
         Makie.colorbuffer(fig)
     catch
     end
+    _detach_glmakie_screens!(fig)
     if fullscreen
         try
             screen = GLMakie.Screen(; fullscreen = true, float = false, focus_on_show = true)
@@ -1261,6 +1276,7 @@ function display_figure(fig; fullscreen::Bool = true)
             return screen
         catch err
             @warn "Fullscreen display failed; falling back to normal window." exception=(err, catch_backtrace())
+            _detach_glmakie_screens!(fig)
         end
     end
     screen = GLMakie.Screen(; focus_on_show = true)
