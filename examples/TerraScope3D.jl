@@ -1,8 +1,6 @@
-# Example: interactive 3D model viewer with user-defined lat/lon cross-sections.
-# Author: @pankajkmishra
-# This script displays one horizontal map slice plus only selected cross-sections.
-# Cross-sections are defined by endpoint pairs in (lat, lon), and each can be slid
-# across the model with its own slider.
+# TerraScope 3D viewer. Author: @pankajkmishra
+# Do not run this file directly: `examples/launch_TerraScope3D.jl` sets the inputs and
+# settings, then includes this file. The defaults are in DEFAULT_TERRASCOPE_LAUNCH_CONFIG.
 
 using GLMakie
 GLMakie.activate!()

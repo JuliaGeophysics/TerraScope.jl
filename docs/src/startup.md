@@ -1,22 +1,34 @@
 # Faster startup
 
-To remove most of the first-run compilation before a demo, build a custom sysimage once and launch
-TerraScope with it:
+Why is the first start slow? Julia compiles the code before it runs it. A system image (sysimage)
+keeps the compiled code in a file, so Julia does not compile it again.
+
+Build the sysimage one time. This can take 10 minutes or more:
 
 ```shell
 julia --project=. scripts/build_sysimage.jl
+```
+
+Then start TerraScope with the sysimage:
+
+```shell
 julia --project=. -J build/TerraScopeSysimage.dll examples/launch_TerraScope3D.jl
 ```
 
-This does not eliminate file I/O, Windows display setup or GL context creation, but it substantially
-reduces Julia compilation and makes startup more consistent across runs.
+The `-J` option tells Julia which sysimage to use.
+
+The sysimage removes most of the compile time. It does not remove the time to read files, to set
+up the display or to start the graphics. But the startup time becomes shorter and more regular.
+
+Build the sysimage again after you update TerraScope or its packages.
 
 ## Windows launcher
 
-On Windows, run the launcher in the repository root:
+On Windows, double-click `Launch-TerraScope.cmd` in the repository folder, or run it from a
+terminal:
 
 ```shell
 Launch-TerraScope.cmd
 ```
 
-It uses the sysimage automatically when it exists and offers to build it the first time.
+If the sysimage is available, the launcher uses it. If not, the launcher asks you to build it.

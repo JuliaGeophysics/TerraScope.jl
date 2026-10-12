@@ -4,7 +4,7 @@ layout: home
 
 hero:
   name: "TerraScope.jl"
-  tagline: A Makie-based 3D viewer for MT, gravity, magnetic, shapefile and seismic datasets.
+  tagline: A 3D viewer for MT, gravity, magnetic, seismic and shapefile data.
   actions:
     - theme: brand
       text: Getting Started
@@ -18,23 +18,38 @@ hero:
 
 features:
   - title: One launcher file
-    details: Name your files, list your shapefiles, pick your settings. Every input is optional and is checked before the slow work starts.
+    details: You write your file paths and settings in one file. All inputs are optional. The launcher checks each path before it loads the data.
     link: /getting_started
-  - title: Many methods, one scene
-    details: MT resistivity, density and susceptibility volumes share one grid, so properties compare cell for cell.
+  - title: Many methods in one scene
+    details: Resistivity, density and susceptibility models use the same grid. Thus you can compare the properties cell by cell.
     link: /inputs
   - title: Georeferenced overlays
-    details: Shapefiles, survey points and SEG-Y curtains are reprojected into a single projected CRS.
-    link: /inputs#reading-point-files
+    details: TerraScope moves shapefiles, survey points and SEG-Y lines into one projected CRS.
+    link: /inputs#point-files
   - title: Faster startup
-    details: Build a custom sysimage once to strip most first-run compilation before a demo.
+    details: Build a custom system image one time. Then the viewer opens much faster.
     link: /startup
 ---
 ```
 
 ## What is TerraScope.jl?
 
-TerraScope.jl is a [Makie](https://docs.makie.org/)-based local viewer for MT, density,
-susceptibility, shapefile and seismic datasets. Model and data IO, voxel handling, overlays, seismic
-curtains and the 3D viewing tools all live in one Julia package, part of the
-[JuliaGeophysics ecosystem](https://github.com/JuliaGeophysics).
+TerraScope.jl is a 3D viewer for geophysical models and data. It shows these items in one scene:
+
+- MT resistivity models and MT sites
+- Density models and gravity surveys
+- Susceptibility models and magnetic surveys
+- Seismic lines from SEG-Y files
+- Linework from shapefiles
+
+TerraScope runs on your computer. It uses [Makie](https://docs.makie.org/) for the graphics.
+It is part of the [JuliaGeophysics](https://github.com/JuliaGeophysics) ecosystem.
+
+![The TerraScope viewer](assets/viewer.png)
+
+## Where do I start?
+
+Are you new to Julia? Then start at [Getting Started](getting_started.md). It shows how to
+install Julia and how to open the viewer for the first time.
+
+Do you have Julia already? Then read [Inputs](inputs.md) to find which files TerraScope can read.

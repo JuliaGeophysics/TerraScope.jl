@@ -3,13 +3,12 @@
 [![CI](https://github.com/JuliaGeophysics/TerraScope.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/JuliaGeophysics/TerraScope.jl/actions/workflows/CI.yml)
 [![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://juliageophysics.com/TerraScope.jl/dev/)
 
-TerraScope.jl is a [Makie](https://docs.makie.org/)-based 3D viewer for MT, gravity, magnetic,
-shapefile and seismic datasets, part of the [JuliaGeophysics](https://github.com/JuliaGeophysics)
-ecosystem.
+A 3D viewer for MT, gravity, magnetic, seismic and shapefile data.
+Part of [JuliaGeophysics](https://github.com/JuliaGeophysics).
+
+![The TerraScope viewer](docs/src/assets/viewer.png)
 
 ## Quick start
-
-Requires Julia 1.12 or newer.
 
 ```shell
 git clone https://github.com/JuliaGeophysics/TerraScope.jl
@@ -18,13 +17,11 @@ julia --project=. -e "using Pkg; Pkg.instantiate()"
 julia --project=. examples/launch_TerraScope3D.jl
 ```
 
-[examples/launch_TerraScope3D.jl](examples/launch_TerraScope3D.jl) is the only file you edit: list your
-model, data, seismic and shapefile paths, and adjust the startup settings. On Windows you can run
-`Launch-TerraScope.cmd` instead.
+Set your file paths in `examples/launch_TerraScope3D.jl`.
+Julia 1.12 or newer is necessary. Julia 1.13.0 is recommended, because it precompiles faster.
+
+![The launcher in the terminal](docs/src/assets/launcher.png)
 
 ## Documentation
 
-Supported inputs, launcher settings, demo data and faster startup are covered in the
-[documentation](https://juliageophysics.com/TerraScope.jl/dev/).
-
-Feedback and issues: [GitHub issues](https://github.com/JuliaGeophysics/TerraScope.jl/issues).
+[juliageophysics.com/TerraScope.jl](https://juliageophysics.com/TerraScope.jl/dev/)

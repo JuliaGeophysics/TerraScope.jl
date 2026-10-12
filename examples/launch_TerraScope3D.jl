@@ -28,9 +28,9 @@ const TERRASCOPE_LAUNCH_CONFIG = (
 
 	# ── 1. INPUTS ────────────────────────────────────────────────────────────────
 	# `_model` is a 3D volume, `_data` is the measured dataset for the same method.
-	# MT models read ModEM/WS `.rho`; the others read `.xyz` point files
+	# MT models: ModEM/WS `.rho`. Gravity and magnetic models: `.xyz` point files
 	# (`longitude latitude elevation value`, or easting/northing in a projected CRS)
-	# and TerraScope `.vox` volumes.
+	# and TerraScope `.vox` volumes. All slots also read jif3D `.nc` files.
 	inputs = (
 		MT_model       = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\I_NLCG_140.rho",
 		MT_data        = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\I_NLCG_140.dat",
@@ -86,8 +86,8 @@ const TERRASCOPE_LAUNCH_CONFIG = (
 )
 
 # ── Pre-flight ────────────────────────────────────────────────────────────────
-# Report what was found before the slow work starts, so a wrong path shows up now
-# instead of as a silently missing layer ten steps later.
+# Check each path before the data loads. A wrong path shows here, not as a missing
+# layer in the scene.
 
 using TerraScope
 
