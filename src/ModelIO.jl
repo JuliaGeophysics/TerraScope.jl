@@ -211,3 +211,85 @@ function write_model_modem(outputfile::AbstractString,
 
     return outputfile
 end
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  jif3D  (https://git.tu-berlin.de/applied-geophysics/jif3d)
+#  Readers for other inversion codes (VTK, ...) go in their own section below.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# jif3d NetCDF models and data (https://git.tu-berlin.de/applied-geophysics/jif3d).
+#
+# jif3d works in absolute projected metres: X is northing, Y is easting and Z is depth,
+# positive down. A model stores the end coordinate of every cell along each axis plus a
+# separate `<axis>_Origin` for the first boundary. Arrays are written in C order as
+# (Depth, Easting, Northing), so they read here as (Northing, Easting, Depth).
+
+const JIF3D_MODEL_VARIABLES = (
+    (name = "Conductivity", kind = :resistivity, units = "ohm m"),
+    (name = "Density", kind = :density, units = "kg/m^3"),
+    (name = "Susceptibility", kind = :susceptibility, units = "SI"),
+)
+
+is_jif3d_file(path::AbstractString) = lowercase(splitext(path)[2]) == ".nc"
+
+function _jif3d_edges(ds, axis::AbstractString)
+    ends = Float64.(collect(ds[axis][:]))
+    origin_name = axis * "_Origin"
+    origin = haskey(ds, origin_name) ? Float64(ds[origin_name][]) : 0.0
+    edges = vcat(origin, ends)
+    all(>(0), diff(edges)) || error("jif3d $axis boundaries are not strictly increasing.")
+    return edges
+end
+
+_centers(edges) = (edges[1:end-1] .+ edges[2:end]) ./ 2
+
+"""
+    load_model_jif3D(path)
+
+Read a jif3d `.nc` model. Conductivity is returned as resistivity in ohm m; density
+(kg/m^3) and susceptibility (SI) are returned unchanged. `values` is indexed
+(north, east, depth), with cell centres in `north`, `east` and `depth` (positive down).
+"""
+function load_model_jif3D(path::AbstractString)
+    NCDataset(path) do ds
+        entry = findfirst(v -> haskey(ds, v.name), JIF3D_MODEL_VARIABLES)
+        entry === nothing && error("$(basename(path)) is not a jif3d model: none of " *
+            join((v.name for v in JIF3D_MODEL_VARIABLES), ", ", " or ") * " is present.")
+        spec = JIF3D_MODEL_VARIABLES[entry]
+        var = ds[spec.name]
+        dimnames(var) == ("Northing", "Easting", "Depth") ||
+            error("Unexpected jif3d $(spec.name) dimensions $(dimnames(var)).")
+        values = Float64.(coalesce.(var[:, :, :], NaN))
+        if spec.kind === :resistivity
+            values = map(s -> s > 0 ? 1.0 / s : NaN, values)
+        end
+        north_edges = _jif3d_edges(ds, "Northing")
+        east_edges = _jif3d_edges(ds, "Easting")
+        depth_edges = _jif3d_edges(ds, "Depth")
+        size(values) == (length(north_edges) - 1, length(east_edges) - 1, length(depth_edges) - 1) ||
+            error("jif3d $(spec.name) size $(size(values)) does not match its mesh.")
+        return (kind = spec.kind, units = spec.units, name = splitext(basename(path))[1],
+            values = values,
+            north = _centers(north_edges), east = _centers(east_edges), depth = _centers(depth_edges),
+            north_edges = north_edges, east_edges = east_edges, depth_edges = depth_edges)
+    end
+end
+
+"""
+    jif3d_axes_to_crs(east, north, source_crs, target_crs)
+
+Map jif3d axis coordinates into `target_crs` as scene axes `(x = easting, y = northing)`.
+Identical CRSs pass through unchanged. Otherwise each axis is transformed along the
+centre line of the other, which keeps the grid rectilinear; that is exact for a pure
+datum shift and a close approximation between neighbouring projected CRSs.
+"""
+function jif3d_axes_to_crs(east::AbstractVector, north::AbstractVector,
+        source_crs::AbstractString, target_crs::AbstractString)
+    src, dst = String(strip(source_crs)), String(strip(target_crs))
+    uppercase(src) == uppercase(dst) && return collect(Float64, east), collect(Float64, north)
+    transform = _xy_transform(src, dst)
+    e_mid, n_mid = (first(east) + last(east)) / 2, (first(north) + last(north)) / 2
+    x = [transform(e, n_mid)[1] for e in east]
+    y = [transform(e_mid, n)[2] for n in north]
+    return x, y
+end

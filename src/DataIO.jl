@@ -375,3 +375,58 @@ function load_dataset_bundle(root::AbstractString = default_data_dir(); with_pad
 
     return DatasetBundle(root, model, mt_data, resistivity, density, paths.shapefiles, paths.segy_files)
 end
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  jif3D  (https://git.tu-berlin.de/applied-geophysics/jif3d)
+#  Readers for other inversion codes (VTK, ...) go in their own section below.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# jif3d NetCDF data files: station positions and, for potential fields, the measured
+# values. MeasPosX is northing, MeasPosY easting and MeasPosZ depth (positive down).
+
+"""
+    load_data_jif3D(path)
+
+Read the station positions of a jif3d `.nc` data file, plus the measured value for
+potential-field data. The method is recognised from the variables present:
+
+- MT impedance (`Zxy_re`): `kind = :resistivity`, `values = nothing`.
+- Scalar gravity (`Scalar_gravity`, m/s^2): `kind = :density`, values in mGal.
+- Total-field magnetics (`T`, nT), or three-component (`Bz` is used): `kind = :susceptibility`.
+
+Positions are `north`, `east` and `elevation` (jif3d's positive-down Z, negated).
+"""
+function load_data_jif3D(path::AbstractString)
+    NCDataset(path) do ds
+        all(v -> haskey(ds, v), ("MeasPosX", "MeasPosY", "MeasPosZ")) ||
+            error("$(basename(path)) is not a jif3d data file: MeasPosX/Y/Z are missing.")
+        north = Float64.(collect(ds["MeasPosX"][:]))
+        east = Float64.(collect(ds["MeasPosY"][:]))
+        elevation = .-Float64.(collect(ds["MeasPosZ"][:]))
+        kind, units, values = if haskey(ds, "Zxy_re")
+            :resistivity, "", nothing
+        elseif haskey(ds, "Scalar_gravity")
+            :density, "mGal", Float64.(collect(ds["Scalar_gravity"][:])) .* 1e5
+        elseif haskey(ds, "T")
+            :susceptibility, "nT", Float64.(collect(ds["T"][:]))
+        elseif haskey(ds, "Bz")
+            :susceptibility, "nT", Float64.(collect(ds["Bz"][:]))
+        else
+            error("$(basename(path)) holds no MT impedance, scalar gravity or magnetic data that TerraScope reads.")
+        end
+        values === nothing || length(values) == length(north) ||
+            error("$(basename(path)): $(length(values)) values for $(length(north)) stations.")
+        return (kind = kind, units = units, name = splitext(basename(path))[1],
+            north = north, east = east, elevation = elevation, values = values)
+    end
+end
+
+"""Station positions of a jif3d data file in `target_crs` (pointwise, unlike the grid axes)."""
+function jif3d_points_to_crs(east::AbstractVector, north::AbstractVector,
+        source_crs::AbstractString, target_crs::AbstractString)
+    src, dst = String(strip(source_crs)), String(strip(target_crs))
+    uppercase(src) == uppercase(dst) && return collect(Float64, east), collect(Float64, north)
+    transform = _xy_transform(src, dst)
+    xy = [transform(e, n) for (e, n) in zip(east, north)]
+    return first.(xy), last.(xy)
+end

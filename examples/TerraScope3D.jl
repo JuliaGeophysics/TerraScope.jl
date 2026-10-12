@@ -13,7 +13,8 @@ using Shapefile
 using GeoInterface
 using Proj
 using FFTW
-using TerraScope: core_indices, edges_from_centers, load_data_modem, load_density_volume, load_model_modem, z_indices_for_max_depth
+using TerraScope: core_indices, edges_from_centers, load_data_modem, load_density_volume, load_model_modem, z_indices_for_max_depth,
+    is_jif3d_file, load_model_jif3D, load_data_jif3D, jif3d_axes_to_crs, jif3d_points_to_crs
 import TerraScope   # File readers shared with the package (ImportOptions, resampling).
 
 # -------------------- Input Files --------------------
@@ -88,6 +89,7 @@ DEFAULT_TERRASCOPE_LAUNCH_CONFIG = (
     ),
     coordinate = (
         target_crs = "EPSG:3067",
+        jif3d_crs = "EPSG:3067",     # CRS of jif3d `.nc` mesh and station coordinates.
         selector_show_latlon_ticks = false,
     ),
     seismic = (
@@ -120,7 +122,19 @@ gravity_model_file = _input_path(launch_config.inputs.gravity_model)
 gravity_data_file = _input_path(launch_config.inputs.gravity_data)
 magnetic_model_file = _input_path(launch_config.inputs.magnetic_model)
 magnetic_data_file = _input_path(launch_config.inputs.magnetic_data)
-seismic_file = _input_path(launch_config.inputs.seismic_data)
+# `seismic_data` is one path, or a list of lines: paths or (path =, label =, line_color =,
+# sample_spacing_m =, top_z_m =) entries. Fields left out use the `seismic` settings.
+function _seismic_spec(entry)
+    entry isa NamedTuple || (entry = (path = entry,))
+    path = _input_path(entry.path)
+    return (path = path,
+        label = String(get(entry, :label, splitext(basename(path))[1])),
+        line_color = get(entry, :line_color, nothing),
+        sample_spacing_m = get(entry, :sample_spacing_m, nothing),
+        top_z_m = get(entry, :top_z_m, nothing))
+end
+_seismic_entries(x) = x === nothing ? [] : (x isa AbstractString || x isa NamedTuple) ? [x] : collect(x)
+seismic_specs = filter(s -> !isempty(s.path), map(_seismic_spec, _seismic_entries(launch_config.inputs.seismic_data)))
 
 # Every model input, in the order the property buttons appear. `kind` is the physical
 # property the viewer colours and labels; the method name is what the user configures.
@@ -131,7 +145,7 @@ model_inputs = (
 )
 
 configured_inputs = [p for p in (mt_model_file, mt_data_file, gravity_model_file, gravity_data_file,
-                                 magnetic_model_file, magnetic_data_file, seismic_file) if !isempty(p)]
+                                 magnetic_model_file, magnetic_data_file, (s.path for s in seismic_specs)...) if !isempty(p)]
 data_root = isempty(configured_inputs) ? pwd() : dirname(first(configured_inputs))
 model_name_for_export = isempty(configured_inputs) ? "TerraScope" : splitext(basename(first(configured_inputs)))[1]
 
@@ -193,6 +207,7 @@ isosurface_defaults = launch_config.isosurface
 # selector_show_latlon_ticks=true if you want geographic tick labels on the
 # lower selector panel while keeping the scene itself projected.
 target_crs = launch_config.coordinate.target_crs
+jif3d_crs = launch_config.coordinate.jif3d_crs
 selector_show_latlon_ticks = launch_config.coordinate.selector_show_latlon_ticks
 
 # -------------------- Seismic Curtain --------------------
@@ -1116,14 +1131,18 @@ function _extract_trace_xy(h; pref::Symbol = :source)
     gx = Float64(getproperty(h, :GroupX)) * scale
     gy = Float64(getproperty(h, :GroupY)) * scale
 
-    source_ok = isfinite(sx) && isfinite(sy) && !(sx == 0.0 && sy == 0.0)
-    group_ok = isfinite(gx) && isfinite(gy) && !(gx == 0.0 && gy == 0.0)
+    cx = Float64(getproperty(h, :CDPX)) * scale
+    cy = Float64(getproperty(h, :CDPY)) * scale
 
-    if pref == :group
-        return group_ok ? (gx, gy) : (sx, sy)
-    else
-        return source_ok ? (sx, sy) : (gx, gy)
+    # Stacked and migrated lines often carry only CDP coordinates; any choice falls back
+    # to the next header set that is filled in. `:auto` is source, then group, then CDP.
+    ok(x, y) = isfinite(x) && isfinite(y) && !(x == 0.0 && y == 0.0)
+    order = pref == :group ? ((gx, gy), (sx, sy), (cx, cy)) :
+        pref == :cdp ? ((cx, cy), (sx, sy), (gx, gy)) : ((sx, sy), (gx, gy), (cx, cy))
+    for xy in order
+        ok(xy...) && return xy
     end
+    return first(order)
 end
 
 function _normalize_amplitude(A::AbstractMatrix{<:Real}; clip_quantile::Real = 0.995)
@@ -1233,19 +1252,13 @@ function clip_seismic_curtain_to_depth(seismic_curtain, min_z::Real)
     seismic_curtain === nothing && return nothing
     keep = vec(seismic_curtain.Z[1, :] .>= Float64(min_z))
     any(keep) || return seismic_curtain
-    return (
+    return merge(seismic_curtain, (
         X = seismic_curtain.X[:, keep],
         Y = seismic_curtain.Y[:, keep],
         Z = seismic_curtain.Z[:, keep],
         C = seismic_curtain.C[:, keep],
-        line_x = seismic_curtain.line_x,
-        line_y = seismic_curtain.line_y,
-        line_z = seismic_curtain.line_z,
-        n_traces = seismic_curtain.n_traces,
-        n_samples = seismic_curtain.n_samples,
-        n_traces_used = seismic_curtain.n_traces_used,
-        n_samples_used = count(keep)
-    )
+        n_samples_used = count(keep),
+    ))
 end
 
 # GLMakie refuses to display a scene that is still attached to another GLMakie screen
@@ -1364,11 +1377,11 @@ end
 
 # XY extent for a scene with no model in it: whatever non-model content was configured,
 # else a default box. Only ever called when nothing else defines the scene's size.
-function _blank_scene_extent(seismic_curtain, overlays, overlay_transform, auto_reproject::Bool)
+function _blank_scene_extent(seismic_curtains, overlays, overlay_transform, auto_reproject::Bool)
     xs, ys = Float64[], Float64[]
-    if seismic_curtain !== nothing
-        append!(xs, collect(extrema(seismic_curtain.X)))
-        append!(ys, collect(extrema(seismic_curtain.Y)))
+    for curtain in seismic_curtains
+        append!(xs, collect(extrema(curtain.X)))
+        append!(ys, collect(extrema(curtain.Y)))
     end
     for entry in overlays, segment in TerraScope.shapefile_segments(entry.path;
             auto_reproject_to_wgs84 = auto_reproject, post_transform = overlay_transform)
@@ -1408,7 +1421,7 @@ function modem_3d_viewer_crosssections(
     north_axis::Symbol = :y,
     xy_to_latlon = nothing,
     selector_show_latlon_ticks::Bool = false,
-    seismic_curtain = nothing,
+    seismic_curtains = [],
     seismic_display_mode::Symbol = :original,
     show_seismic_model_section_default::Bool = true,
     scene_only_default::Bool = false
@@ -1552,7 +1565,7 @@ function modem_3d_viewer_crosssections(
     colsize!(fig.layout, 2, Relative(0.04))
 
     show_map_slice = Observable(false)
-    show_seis_curtain = Observable(seismic_curtain !== nothing)
+    show_seis_curtain = Observable(!isempty(seismic_curtains))
     show_data = Observable(false)
     show_seis_model_section = Observable(show_seismic_model_section_default)
     show_full_layout = Observable(!scene_only_default)
@@ -1568,8 +1581,8 @@ function modem_3d_viewer_crosssections(
     depth_lbl = Label(view_controls[1, 5], "Depth: $(round(-z[depth_slider.value[]], digits=0)) m", fontsize = 10, color = :gray35)
 
     btn_toggle_map = Button(view_controls[1, 6], label = "Show Map Slice", fontsize = 10)
-    btn_toggle_seis_curtain = Button(view_controls[1, 7], label = drape_toggle_label(seismic_curtain !== nothing, show_seis_model_section[]), fontsize = 10)
-    btn_toggle_seis_section = Button(view_controls[1, 8], label = seismic_section_toggle_label(seismic_curtain !== nothing, show_seis_curtain[]), fontsize = 10)
+    btn_toggle_seis_curtain = Button(view_controls[1, 7], label = drape_toggle_label(!isempty(seismic_curtains), show_seis_model_section[]), fontsize = 10)
+    btn_toggle_seis_section = Button(view_controls[1, 8], label = seismic_section_toggle_label(!isempty(seismic_curtains), show_seis_curtain[]), fontsize = 10)
     btn_reset = Button(view_controls[1, 9], label = "Reset View", fontsize = 10)
     btn_export_3d = Button(view_controls[1, 10], label = "Export 3D", fontsize = 10)
     # One button per property, whether or not a file was configured for it; a property
@@ -1703,10 +1716,11 @@ function modem_3d_viewer_crosssections(
     colgap!(section_controls, 6)
     colgap!(iso_controls, 6)
 
-    seismic_path_model = Tuple{Float64, Float64}[]
-    if seismic_curtain !== nothing
-        xmin, xmax = extrema(x)
-        ymin, ymax = extrema(y)
+    seismic_path_models = Vector{Tuple{Float64, Float64}}[]
+    xmin, xmax = extrema(x)
+    ymin, ymax = extrema(y)
+    for seismic_curtain in seismic_curtains
+        seismic_path_model = Tuple{Float64, Float64}[]
         for i in eachindex(seismic_curtain.line_x)
             sx = Float64(seismic_curtain.line_x[i])
             sy = Float64(seismic_curtain.line_y[i])
@@ -1722,8 +1736,9 @@ function modem_3d_viewer_crosssections(
             end
             push!(seismic_path_model, (sx, sy))
         end
+        length(seismic_path_model) >= 2 && push!(seismic_path_models, seismic_path_model)
     end
-    seismic_curtain_clipped = clip_seismic_curtain_to_depth(seismic_curtain, minimum(z))
+    seismic_curtains_clipped = [clip_seismic_curtain_to_depth(c, minimum(z)) for c in seismic_curtains]
 
     corner_controls = GridLayout(fig[1, 1], tellwidth = false, tellheight = false, halign = :right, valign = :top)
     rowsize!(corner_controls, 1, Fixed(36))
@@ -1777,8 +1792,8 @@ function modem_3d_viewer_crosssections(
     function update_axis_info!()
         vol = current_volume()
         dval = -vol.z[depth_slider.value[]]
-        drape_status = (seismic_curtain !== nothing && show_seis_model_section[]) ? "ON" : "OFF"
-        seismic_section_status = (seismic_curtain !== nothing && show_seis_curtain[]) ? "ON" : "OFF"
+        drape_status = (!isempty(seismic_curtains) && show_seis_model_section[]) ? "ON" : "OFF"
+        seismic_section_status = (!isempty(seismic_curtains) && show_seis_curtain[]) ? "ON" : "OFF"
         axis_info[] = "Volume: $(vol.name)   |   Depth: $(round(dval, digits=0)) m   |   Sections: $(section_count())   |   Map slice: $(show_map_slice[] ? "ON" : "OFF")   |   Drape: $(drape_status)   |   Seismic section: $(seismic_section_status)"
     end
 
@@ -2145,7 +2160,7 @@ function modem_3d_viewer_crosssections(
             end
         end
 
-        if seismic_curtain_clipped !== nothing && show_seis_curtain[]
+        for seismic_curtain_clipped in (show_seis_curtain[] ? seismic_curtains_clipped : ())
             h_curtain = surface!(target_ax,
                 seismic_curtain_clipped.X,
                 seismic_curtain_clipped.Y,
@@ -2160,7 +2175,7 @@ function modem_3d_viewer_crosssections(
                 seismic_curtain_clipped.line_x,
                 seismic_curtain_clipped.line_y,
                 fill(seismic_curtain_clipped.line_z, length(seismic_curtain_clipped.line_x));
-                color = seismic_line_color,
+                color = something(get(seismic_curtain_clipped, :line_color, nothing), seismic_line_color),
                 linewidth = seismic_line_width)
             if target_ax === ax
                 push!(dynamic_plots, h_curtain)
@@ -2184,7 +2199,7 @@ function modem_3d_viewer_crosssections(
             target_ax === ax && push!(dynamic_plots, h_sec)
         end
 
-        if seismic_curtain !== nothing && show_seis_model_section[] && length(seismic_path_model) >= 2
+        for seismic_path_model in (show_seis_model_section[] ? seismic_path_models : ())
             Xs, Ys, Zs, Cs, _ = build_section_surface_polyline(vol.x, vol.y, vol.z, vol.values, seismic_path_model; nsamp = section_samples_along)
             h_seis_sec = surface!(target_ax,
                 Xs,
@@ -2577,7 +2592,7 @@ function modem_3d_viewer_crosssections(
     end
 
     on(btn_toggle_seis_curtain.clicks) do _
-        if seismic_curtain === nothing
+        if isempty(seismic_curtains)
             export_status[] = "No seismic drape available"
             return
         end
@@ -2588,7 +2603,7 @@ function modem_3d_viewer_crosssections(
     end
 
     on(btn_toggle_seis_section.clicks) do _
-        if seismic_curtain === nothing
+        if isempty(seismic_curtains)
             export_status[] = "No seismic section available"
             return
         end
@@ -2692,8 +2707,8 @@ function modem_3d_viewer_crosssections(
     end
 
     btn_toggle_map.label[] = show_map_slice[] ? "Hide Map Slice" : "Show Map Slice"
-    btn_toggle_seis_curtain.label[] = drape_toggle_label(seismic_curtain !== nothing, show_seis_model_section[])
-    btn_toggle_seis_section.label[] = seismic_section_toggle_label(seismic_curtain !== nothing, show_seis_curtain[])
+    btn_toggle_seis_curtain.label[] = drape_toggle_label(!isempty(seismic_curtains), show_seis_model_section[])
+    btn_toggle_seis_section.label[] = seismic_section_toggle_label(!isempty(seismic_curtains), show_seis_curtain[])
 
     on(btn_export_iso.clicks) do _
         try
@@ -2758,14 +2773,24 @@ function main(; open_window::Bool = true, show_banner::Bool = true)
     # in the project CRS; an MT model on its own is drawn in its own local metres; with
     # no MT model the scene is in the project CRS, which is what every other input is
     # read into anyway.
+    # A jif3d `.nc` model is already in absolute projected metres (`jif3d_crs`), so it
+    # needs no data file to be georeferenced; its data file only adds the site markers.
     _step!("Loading MT model")
-    M = isempty(mt_model_file) ? nothing : load_model_modem(mt_model_file)
-    d = (M !== nothing && !isempty(mt_data_file)) ? load_data_modem(mt_data_file) : nothing
+    mt_jif3d = !isempty(mt_model_file) && is_jif3d_file(mt_model_file)
+    M = isempty(mt_model_file) ? nothing : mt_jif3d ? load_model_jif3D(mt_model_file) : load_model_modem(mt_model_file)
+    d = (M !== nothing && !isempty(mt_data_file)) ?
+        (is_jif3d_file(mt_data_file) ? load_data_jif3D(mt_data_file) : load_data_modem(mt_data_file)) : nothing
 
     _step!("Georeferencing")
     local x_target, y_target, overlay_transform, xy_to_latlon
-    georeferenced = M === nothing || d !== nothing
-    if M !== nothing && d !== nothing
+    georeferenced = M === nothing || d !== nothing || mt_jif3d
+    if mt_jif3d
+        M, d, x_target, y_target, station_x, station_y = _jif3d_mt_frame(M, d)
+        wgs84_to_target = _resolve_wgs84_to_target_xy_transform(target_crs)
+        target_to_wgs84 = _resolve_target_xy_to_wgs84_transform(target_crs)
+        overlay_transform = (lon, lat) -> wgs84_to_target(Float64(lon), Float64(lat))
+        xy_to_latlon = (xv, yv) -> target_to_wgs84(Float64(xv), Float64(yv))
+    elseif M !== nothing && d !== nothing
         x_target, y_target, lat0, lon0, shiftlat, shiftlon, lat_ref, lon_ref, mismatch_dim_consistent,
             station_x, station_y = model_xy_to_target_crs_centers(M, d, target_crs)
         wgs84_to_target = _resolve_wgs84_to_target_xy_transform(target_crs)
@@ -2848,7 +2873,8 @@ function main(; open_window::Bool = true, show_banner::Bool = true)
     end
 
     function load_model_volume(path::AbstractString, kind::Symbol, units::AbstractString)
-        volume = lowercase(splitext(path)[2]) == ".xyz" ? load_point_volume(path, kind, units) :
+        volume = is_jif3d_file(path) ? _jif3d_volume(path, kind) :
+            lowercase(splitext(path)[2]) == ".xyz" ? load_point_volume(path, kind, units) :
             (M_target === nothing ? load_project_crs_volume(path) : load_local_mt_aligned_volume(path))
         # Density is configured and read in kg/m^3 but displayed in g/cc throughout.
         kind === :density || return volume
@@ -2897,6 +2923,10 @@ function main(; open_window::Bool = true, show_banner::Bool = true)
             continue
         end
         try
+            if is_jif3d_file(entry.data)
+                data_layers[entry.kind] = _jif3d_data_layer(entry.data, entry.kind, entry.method)
+                continue
+            end
             session = TerraScope.ImportSession()
             TerraScope.set_project_crs!(session, target_crs)
             layer = TerraScope.import_layer!(session, entry.data,
@@ -2909,24 +2939,26 @@ function main(; open_window::Bool = true, show_banner::Bool = true)
         end
     end
 
-    seismic_curtain = nothing
+    seismic_curtains = NamedTuple[]
     resolved_seismic_display_mode = _resolve_seismic_display_mode(seismic_display_mode)
-    _step!("Loading seismic section")
-    if show_seismic
-        seismic_path = seismic_file === nothing ? "" : strip(String(seismic_file))
-        if !isempty(seismic_path) && isfile(seismic_path)
-            try
-                seismic_curtain = load_seismic_curtain_from_segy(seismic_path;
-                    trace_xy = seismic_trace_xy,
-                    display_mode = resolved_seismic_display_mode,
-                    sample_spacing_m = seismic_sample_spacing_m,
-                    top_z_m = seismic_top_z_m,
-                    max_traces = seismic_max_traces,
-                    max_samples = seismic_max_samples,
-                    clip_quantile = seismic_clip_quantile)
-            catch err
-                @warn "Failed to load seismic SEG-Y; proceeding without seismic overlay." exception=(err, catch_backtrace())
-            end
+    _step!("Loading seismic sections")
+    for spec in (show_seismic ? seismic_specs : ())
+        if !isfile(spec.path)
+            @warn "Seismic line $(spec.label) not found; proceeding without it." path = spec.path
+            continue
+        end
+        try
+            curtain = load_seismic_curtain_from_segy(spec.path;
+                trace_xy = seismic_trace_xy,
+                display_mode = resolved_seismic_display_mode,
+                sample_spacing_m = something(spec.sample_spacing_m, seismic_sample_spacing_m),
+                top_z_m = something(spec.top_z_m, seismic_top_z_m),
+                max_traces = seismic_max_traces,
+                max_samples = seismic_max_samples,
+                clip_quantile = seismic_clip_quantile)
+            push!(seismic_curtains, merge(curtain, (label = spec.label, line_color = spec.line_color)))
+        catch err
+            @warn "Failed to load seismic line $(spec.label); proceeding without it." exception=(err, catch_backtrace())
         end
     end
 
@@ -2949,7 +2981,7 @@ function main(; open_window::Bool = true, show_banner::Bool = true)
     end
     primary_available = primary_volume !== nothing
     if !primary_available
-        xlim, ylim = _blank_scene_extent(seismic_curtain, shapefile_layers,
+        xlim, ylim = _blank_scene_extent(seismic_curtains, shapefile_layers,
             overlay_transform, overlay_auto_reproject_to_wgs84)
         primary_name = "No model"
         primary_logscale = false
@@ -2986,7 +3018,7 @@ function main(; open_window::Bool = true, show_banner::Bool = true)
         north_axis = :y,
         xy_to_latlon = xy_to_latlon,
         selector_show_latlon_ticks = selector_show_latlon_ticks,
-        seismic_curtain = seismic_curtain,
+        seismic_curtains = seismic_curtains,
         seismic_display_mode = resolved_seismic_display_mode,
         show_seismic_model_section_default = show_seismic_model_section,
         scene_only_default = show_only_3d_scene
@@ -3007,6 +3039,47 @@ function main(; open_window::Bool = true, show_banner::Bool = true)
     print("\e[0 q")   # restore default cursor
 
     return fig, parts
+end
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  jif3D  (NetCDF `.nc` models and data)
+#
+#  jif3D meshes and stations are absolute projected metres in `jif3d_crs`, so an MT
+#  model needs no data file to be georeferenced. Inside `main()` these are reached
+#  only through `is_jif3d_file` checks; other inversion codes can follow the same
+#  pattern with their own section below this one.
+# ══════════════════════════════════════════════════════════════════════════════
+
+"""MT model (and optional sites) in the scene frame: ModEM's layout, north in cx."""
+function _jif3d_mt_frame(J, d)
+    J.kind === :resistivity || error("$(J.name) holds $(J.kind), not conductivity.")
+    _validate_target_crs(target_crs)
+    x_target, y_target = jif3d_axes_to_crs(J.east, J.north, jif3d_crs, target_crs)
+    M = (A = J.values, cx = y_target, cy = x_target, cz = J.depth)
+    station_x, station_y = Float64[], Float64[]
+    if d !== nothing
+        d.kind === :resistivity || @warn "$(d.name) is not MT data; its sites are still shown."
+        station_x, station_y = jif3d_points_to_crs(d.east, d.north, jif3d_crs, target_crs)
+        d = (z = .-d.elevation,)
+    end
+    return M, d, x_target, y_target, station_x, station_y
+end
+
+"""Gravity or magnetic model on its own reprojected axes; a joint inversion already shares the MT mesh."""
+function _jif3d_volume(path::AbstractString, kind::Symbol)
+    J = load_model_jif3D(path)
+    J.kind === kind || error("$(basename(path)) holds $(J.kind), not $(kind).")
+    cx, cy = jif3d_axes_to_crs(J.east, J.north, jif3d_crs, target_crs)
+    return (A = permutedims(J.values, (2, 1, 3)), cx = cx, cy = cy, cz = J.depth, name = J.name)
+end
+
+"""Gravity (mGal) or magnetic (nT) stations for "Show Data"."""
+function _jif3d_data_layer(path::AbstractString, kind::Symbol, method::AbstractString)
+    J = load_data_jif3D(path)
+    J.kind === kind || error("$(basename(path)) holds $(J.kind) data, not $(method).")
+    x, y = jif3d_points_to_crs(J.east, J.north, jif3d_crs, target_crs)
+    return (name = "$(method) data ($(J.units))", x = x, y = y, z = J.elevation,
+        values = J.values, colorrange = TerraScope.compute_colorrange(J.values))
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

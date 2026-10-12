@@ -6,6 +6,7 @@ using DelimitedFiles
 using FFTW
 using GeoInterface
 using LinearAlgebra
+using NCDatasets
 using Printf
 using Proj
 using SegyIO
@@ -51,5 +52,6 @@ export ImportOptions, ImportSession, ImportedLayer, ImportedGrid, ImportedPoints
 export set_project_crs!, import_layer!, load_import, read_xyz_points, read_ubc_model
 export resample_points_to_axes, axes_from_points
 export print_banner
+export load_model_jif3D, load_data_jif3D, jif3d_axes_to_crs, jif3d_points_to_crs, is_jif3d_file
 
 end
