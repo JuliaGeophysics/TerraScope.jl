@@ -3,10 +3,15 @@
 [![CI](https://github.com/JuliaGeophysics/TerraScope.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/JuliaGeophysics/TerraScope.jl/actions/workflows/CI.yml)
 [![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://juliageophysics.com/TerraScope.jl/dev/)
 
-A 3D viewer for MT, gravity, magnetic, seismic and shapefile data.
+A 3D viewer for MT, gravity, magnetic and seismic models and data, with geological maps from shapefiles.
 Part of [JuliaGeophysics](https://github.com/JuliaGeophysics).
 
 ![The TerraScope viewer](docs/src/assets/viewer.png)
+
+> [!TIP]
+> **Draw your own cross-sections.** Click points on the map to draw a profile in any direction,
+> with as many bends as you need. TerraScope cuts the model along the profile and shows the
+> vertical cross-section in 3D. You can export each cross-section as an image.
 
 ## Quick start
 

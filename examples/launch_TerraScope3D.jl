@@ -2,7 +2,7 @@
 #  TerraScope — launcher.  This is the only file you edit.
 #
 #  1  INPUTS      the files to load, by method.  Absolute paths.  "" = not used.
-#  2  SHAPEFILES  linework, each with its own colour, width and transparency.
+#  2  SHAPEFILES  geological maps (any shapefile), each with its own colour, width and transparency.
 #  3  SETTINGS    display, view, CRS, seismic, overlay, isosurface.
 #
 #  Every input is optional:
@@ -42,7 +42,7 @@ const TERRASCOPE_LAUNCH_CONFIG = (
 	),
 
 	# ── 2. SHAPEFILES ────────────────────────────────────────────────────────────
-	# One line per file: path, then how it is drawn. Add as many as you like.
+	# One entry per shapefile: path, then its symbology. Add as many as you need.
 	shapefiles = [
 		(path = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\gis\Tnew\Tnew.shp", color = :black, width = 1.5, alpha = 1.0),
 	],
@@ -66,18 +66,18 @@ const TERRASCOPE_LAUNCH_CONFIG = (
 		target_crs = "EPSG:3067", selector_show_latlon_ticks = true,
 	),
 
-	seismic = (                                              # SEG-Y curtain and model drape.
+	seismic = (                                              # Seismic sections and model sections along the profiles.
 		show = true, display_mode = :envelope,               # `:original` for signed amplitudes.
-		trace_xy = :source,                                  # Which header coordinates locate the traces.
+		trace_xy = :source,                                  # Trace header for coordinates: source, receiver group or CDP.
 		max_traces = 1400, max_samples = 1200,               # Caps that keep large files interactive.
 		sample_spacing_m = 12.5, clip_quantile = 0.995,      # Trace resampling distance, and amplitude clipping.
-		show_model_section = false,                          # Start with the model draped along the line.
+		show_model_section = false,                          # Show the model section along the profile at start.
 	),
 
 	overlay = (                                              # Annotations and survey styling.
 		show_north_arrow = true, show_scale_bar = true,
-		line_color = :black, line_width = 1.5,               # Fallback for a shapefile entry that omits them.
-		survey_colormap = :viridis, survey_markersize = 5,   # How `_data` point files are drawn.
+		line_color = :black, line_width = 1.5,               # For a map layer without its own values.
+		survey_colormap = :viridis, survey_markersize = 5,   # Colormap and symbol size for measured data.
 	),
 
 	isosurface = (                                           # Starting values for the iso controls.

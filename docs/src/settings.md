@@ -29,7 +29,7 @@ Put a comma after each entry. Text after `#` is a comment, and Julia ignores it.
 ## All settings
 
 ```julia
-model = (                                                # Volume display and sections.
+model = (                                                # Model display and sections.
     log10_scale = true, colormap = :Spectral,            # log10(rho) is the usual MT choice.
     max_depth_m = 50000.0,                               # Cells below this depth are not shown.
     show_padding = false, pad_tolerance = 0.2,           # Hide ModEM padding cells, and how to find them.
@@ -50,18 +50,18 @@ coordinate = (                                           # Must be a projected C
     jif3d_crs = "EPSG:3067",                             # CRS of jif3D `.nc` meshes and stations.
 ),
 
-seismic = (                                              # SEG-Y curtain and model drape.
+seismic = (                                              # Seismic sections and model sections along the profiles.
     show = true, display_mode = :envelope,               # `:original` shows signed amplitudes.
-    trace_xy = :source,                                  # The header coordinates that locate the traces.
+    trace_xy = :source,                                  # Trace header for coordinates: source, receiver group or CDP.
     max_traces = 1400, max_samples = 1200,               # Limits that keep large files fast.
     sample_spacing_m = 12.5, clip_quantile = 0.995,      # Trace resample distance, and amplitude clip.
-    show_model_section = false,                          # Show the model drape along the line at start.
+    show_model_section = false,                          # Show the model section along the profile at start.
 ),
 
-overlay = (                                              # Annotations and survey style.
+overlay = (                                              # Map annotations and station symbols.
     show_north_arrow = true, show_scale_bar = true,
-    line_color = :black, line_width = 1.5,               # For a shapefile entry without its own values.
-    survey_colormap = :viridis, survey_markersize = 5,   # How `_data` point files are shown.
+    line_color = :black, line_width = 1.5,               # For a map layer without its own values.
+    survey_colormap = :viridis, survey_markersize = 5,   # Colormap and symbol size for measured data.
 ),
 
 isosurface = (                                           # Start values for the isosurface controls.
@@ -71,12 +71,12 @@ isosurface = (                                           # Start values for the 
 
 ## Shapefiles
 
-Section 2 contains the shapefiles. Write one entry for each file:
+Section 2 contains the geological map layers. Write one entry for each shapefile:
 
 ```julia
 shapefiles = [
-    (path = raw"C:\data\gis\faults.shp", color = :black, width = 1.5, alpha = 1.0),
-    (path = raw"C:\data\gis\lakes.shp",  color = :blue,  width = 1.0, alpha = 0.6),
+    (path = raw"C:\data\gis\fault_traces.shp",     color = :black, width = 1.5, alpha = 1.0),
+    (path = raw"C:\data\gis\geological_units.shp", color = :gray,  width = 1.0, alpha = 0.6),
 ],
 ```
 

@@ -19,9 +19,10 @@ julia --project=. scripts/generate_synthetic_data.jl
 The coordinates are WGS84 longitude and latitude. The files do not tell their CRS. Thus they also
 test the [source CRS detection](inputs.md#source-crs-detection).
 
-How are the two surveys made? Each survey point is a depth-weighted sum of the model cells below
-it. The surveys thus look like data from a flight over the same bodies. But they are not the
-result of a correct forward calculation. Do not use them to test an inversion.
+How are the two datasets made? Each station value is a depth-weighted integral of the model
+column below the station. Thus the anomalies sit above the same source bodies as in the models.
+But the values are not the result of a true forward calculation. Do not use them to test an
+inversion.
 
 ## Smoke test
 

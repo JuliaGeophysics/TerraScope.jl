@@ -51,7 +51,8 @@ Open `examples/launch_TerraScope3D.jl` in a text editor. This is the only file t
 It has three sections:
 
 1. **Inputs**: the model and data files to load. See [Inputs](inputs.md).
-2. **Shapefiles**: the linework to show. Each line has its own `color`, `width` and `alpha`.
+2. **Shapefiles**: the geological maps to show, for example fault traces or geological units.
+   You can add any shapefile. Each file has its own `color`, `width` and `alpha`.
 3. **Settings**: display, view, CRS, seismic, overlay and isosurface options. See
    [Launcher settings](settings.md).
 
@@ -99,7 +100,24 @@ The property buttons select the volume. The scene, the sections, the isosurfaces
 use the selected volume. If there is no file for a property, its button shows `N/A`.
 
 **Show Data** shows the measured data for the property on the screen. For example, select density
-and push **Show Data**. The viewer then shows the gravity survey points.
+and push **Show Data**. The viewer then shows the gravity stations.
+
+### Draw a cross-section
+
+!!! tip "Any profile, drawn by hand"
+    You can cut a vertical cross-section along any profile through the model. The profile can
+    follow a seismic line, cross a fault at right angles or connect two drill holes. It can have
+    as many bends as you need.
+
+    1. Push **Show Both Panels**. The map panel opens below the 3D view.
+    2. In the map panel, left-click to add the vertices of the profile.
+    3. Right-click, or push **Finish Section**. The cross-section appears in the 3D view.
+    4. Draw more profiles if necessary. Use **Prev** and **Next** to select the active section.
+    5. Set **2D max depth (km)**, then push **Export 2D Sections**. TerraScope saves each
+       cross-section as a PNG image in a new `Export2D` folder in `examples`.
+
+    **Clear Points** removes the vertices of the profile that you draw now. **Undo Section** removes
+    the last cross-section.
 
 ## When something goes wrong
 
@@ -107,5 +125,5 @@ and push **Show Data**. The viewer then shows the gravity survey points.
   open a new terminal.
 - **A path shows `✗`.** The file is not at that location. Copy the full path from your file
   manager and paste it between the quotes of `raw"..."`.
-- **The scene has no shapefiles or survey points.** The MT model is not georeferenced. Add the
+- **The view has no map data or stations.** The MT model is not georeferenced. Add the
   `MT_data` file. See [What you get](inputs.md#what-you-get).
