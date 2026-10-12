@@ -54,6 +54,7 @@ DEFAULT_TERRASCOPE_LAUNCH_CONFIG = (
         pad_tolerance = 0.2,
         section_samples_along = 360,
         density_reference_kg_m3 = nothing,   # Added to gravity models: `nothing` plots them as stored (a contrast stays a contrast).
+        density_units = :g_cc,               # Gravity model display units: `:g_cc` or `:kg_m3`.
         display_ranges = (
             resistivity = (1.0, 4.0),
             density = nothing,
@@ -161,6 +162,8 @@ show_padding = launch_config.model.show_padding
 pad_tolerance = launch_config.model.pad_tolerance
 section_samples_along = launch_config.model.section_samples_along
 density_reference_kg_m3 = launch_config.model.density_reference_kg_m3
+density_units = launch_config.model.density_units
+density_units in (:g_cc, :kg_m3) || error("model.density_units must be :g_cc or :kg_m3, not $(repr(density_units)).")
 
 # -------------------- View And Export --------------------
 # Camera defaults, startup mode, and PNG export scaling.
@@ -1630,8 +1633,9 @@ function modem_3d_viewer_crosssections(
             # The 2.8–2.85 g/cc preset suits dense crustal rock; a contrast model, or one
             # that never reaches it, starts from its own top decile instead.
             finite = filter(isfinite, vec(volume.values))
-            if isempty(finite) || (!get(volume, :contrast, false) && maximum(finite) >= 2.8 && minimum(finite) <= 2.85)
-                (2.8, 2.85)
+            lo, hi = _volume_units_label(volume) == "kg/m³" ? (2800.0, 2850.0) : (2.8, 2.85)
+            if isempty(finite) || (!get(volume, :contrast, false) && maximum(finite) >= lo && minimum(finite) <= hi)
+                (lo, hi)
             else
                 (round(quantile(finite, 0.9); sigdigits = 3), round(maximum(finite); sigdigits = 3))
             end
@@ -2891,15 +2895,17 @@ function main(; open_window::Bool = true, show_banner::Bool = true)
         volume = is_jif3d_file(path) ? _jif3d_volume(path, kind) :
             lowercase(splitext(path)[2]) == ".xyz" ? load_point_volume(path, kind, units) :
             (M_target === nothing ? load_project_crs_volume(path) : load_local_mt_aligned_volume(path))
-        # Density is configured and read in kg/m^3 but displayed in g/cc throughout.
+        # Density is configured and read in kg/m^3 and displayed in `density_units`.
         # `density_reference_kg_m3` turns a contrast model into absolute density; without
         # it a contrast model is shown as Δρ, with isosurface defaults from its own range.
         kind === :density || return volume
         reference = density_reference_kg_m3
         contrast = get(volume, :contrast, false) && reference === nothing
-        A = (reference === nothing ? volume.A : volume.A .+ Float64(reference)) ./ 1000.0
+        A = reference === nothing ? volume.A : volume.A .+ Float64(reference)
+        units = density_units === :kg_m3 ? "kg/m³" : "g/cc"
+        density_units === :g_cc && (A = A ./ 1000.0)
         return (A = A, cx = volume.cx, cy = volume.cy, cz = volume.cz, name = volume.name,
-            contrast = contrast, label = contrast ? "Δρ (g/cc)" : _volume_colorbar_label(:density, false))
+            contrast = contrast, units = units, label = (contrast ? "Δρ" : "Density") * " ($units)")
     end
 
     loaded_volumes = Dict{Symbol, Any}()
