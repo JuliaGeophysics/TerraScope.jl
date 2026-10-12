@@ -53,6 +53,7 @@ DEFAULT_TERRASCOPE_LAUNCH_CONFIG = (
         show_padding = false,
         pad_tolerance = 0.2,
         section_samples_along = 360,
+        density_reference_kg_m3 = nothing,   # Added to gravity models: `nothing` plots them as stored (a contrast stays a contrast).
         display_ranges = (
             resistivity = (1.0, 4.0),
             density = nothing,
@@ -159,6 +160,7 @@ max_depth = launch_config.model.max_depth_m
 show_padding = launch_config.model.show_padding
 pad_tolerance = launch_config.model.pad_tolerance
 section_samples_along = launch_config.model.section_samples_along
+density_reference_kg_m3 = launch_config.model.density_reference_kg_m3
 
 # -------------------- View And Export --------------------
 # Camera defaults, startup mode, and PNG export scaling.
@@ -261,6 +263,7 @@ end
 _volume_colormap(kind::Symbol, resistivity_cmap) = resistivity_cmap
 _volume_colorbar_label(kind::Symbol, logscale::Bool) = kind == :density ? "Density (g/cc)" : (kind == :susceptibility ? "Susceptibility (SI)" : (logscale ? "log₁₀ ρ (Ω·m)" : "ρ (Ω·m)"))
 _volume_units_label(kind::Symbol) = kind == :density ? "g/cc" : (kind == :susceptibility ? "SI" : "Ω·m")
+_volume_units_label(volume) = get(volume, :units, _volume_units_label(volume.kind))
 _isosurface_depth_colormap(kind::Symbol) = kind == :density ? [:mintcream, :mediumseagreen, :darkslategray4] :
                                            (kind == :susceptibility ? [:cornsilk, :orange, :orangered4] :
                                             [:aliceblue, :royalblue1, :navy])
@@ -1473,7 +1476,9 @@ function modem_3d_viewer_crosssections(
         cmin = cmin,
         cmax = cmax,
         cmap = cmap,
-        label = _volume_colorbar_label(primary_kind, log10scale),
+        label = get(M, :label, _volume_colorbar_label(primary_kind, log10scale)),
+        units = get(M, :units, _volume_units_label(primary_kind)),
+        contrast = get(M, :contrast, false),
         logscale = log10scale,
     )
 
@@ -1493,7 +1498,9 @@ function modem_3d_viewer_crosssections(
             cmin = d_cmin,
             cmax = d_cmax,
             cmap = _volume_colormap(:density, cmap),
-            label = _volume_colorbar_label(:density, false),
+            label = get(density_model, :label, _volume_colorbar_label(:density, false)),
+            units = get(density_model, :units, _volume_units_label(:density)),
+            contrast = get(density_model, :contrast, false),
             logscale = false,
         )
     end
@@ -1514,7 +1521,8 @@ function modem_3d_viewer_crosssections(
             cmin = s_cmin,
             cmax = s_cmax,
             cmap = _volume_colormap(:susceptibility, cmap),
-            label = _volume_colorbar_label(:susceptibility, false),
+            label = get(susceptibility_model, :label, _volume_colorbar_label(:susceptibility, false)),
+            units = get(susceptibility_model, :units, _volume_units_label(:susceptibility)),
             logscale = false,
         )
     end
@@ -1619,7 +1627,14 @@ function modem_3d_viewer_crosssections(
         defaults = if volume.kind == :resistivity
             (0.0, 10.0)
         elseif volume.kind == :density
-            (2.8, 2.85)
+            # The 2.8–2.85 g/cc preset suits dense crustal rock; a contrast model, or one
+            # that never reaches it, starts from its own top decile instead.
+            finite = filter(isfinite, vec(volume.values))
+            if isempty(finite) || (!get(volume, :contrast, false) && maximum(finite) >= 2.8 && minimum(finite) <= 2.85)
+                (2.8, 2.85)
+            else
+                (round(quantile(finite, 0.9); sigdigits = 3), round(maximum(finite); sigdigits = 3))
+            end
         else
             (0.005, 0.05)
         end
@@ -1633,9 +1648,9 @@ function modem_3d_viewer_crosssections(
 
     iso0 = iso_defaults(current_volume())
     Label(iso_controls[1, 1], "Isosurface", halign = :left, fontsize = 11, color = :gray25)
-    iso_min_label = Label(iso_controls[1, 2], "Iso min ($(_volume_units_label(current_volume().kind))):", halign = :right, fontsize = 10)
+    iso_min_label = Label(iso_controls[1, 2], "Iso min ($(_volume_units_label(current_volume()))):", halign = :right, fontsize = 10)
     iso_min_tb = Textbox(iso_controls[1, 3], stored_string = string(iso0.default_iso_min), width = 70)
-    iso_max_label = Label(iso_controls[1, 4], "Iso max ($(_volume_units_label(current_volume().kind))):", halign = :right, fontsize = 10)
+    iso_max_label = Label(iso_controls[1, 4], "Iso max ($(_volume_units_label(current_volume()))):", halign = :right, fontsize = 10)
     iso_max_tb = Textbox(iso_controls[1, 5], stored_string = string(iso0.default_iso_max), width = 70)
     Label(iso_controls[1, 6], "Start depth (km):", halign = :right, fontsize = 10)
     iso_depth_start_tb = Textbox(iso_controls[1, 7], stored_string = string(iso0.default_iso_depth_start_km), width = 70)
@@ -1808,8 +1823,8 @@ function modem_3d_viewer_crosssections(
         selector_slice[] = copy(vol.values[:, :, depth_slider.value[]])
         update_selector_ticks!()
         btn_iso_color_mode.label[] = iso_color_by_depth[] ? "Color: Depth" : "Color: Property"
-        iso_min_label.text[] = "Iso min ($(_volume_units_label(vol.kind))):"
-        iso_max_label.text[] = "Iso max ($(_volume_units_label(vol.kind))):"
+        iso_min_label.text[] = "Iso min ($(_volume_units_label(vol))):"
+        iso_max_label.text[] = "Iso max ($(_volume_units_label(vol))):"
         defs = iso_defaults(vol)
         _set_textbox!(iso_min_tb, string(defs.default_iso_min))
         _set_textbox!(iso_max_tb, string(defs.default_iso_max))
@@ -2022,7 +2037,7 @@ function modem_3d_viewer_crosssections(
                 "iso_levels" => iso_levels,
                 "triangles" => length(tris),
             )
-            export_status[] = "Smooth isosurface $(vol.name) updated: $(round(vmin_disp, digits=3))–$(round(vmax_disp, digits=3)) $(_volume_units_label(vol.kind)), opacity=$(round(alpha_val, digits=2)), samples=$(selected_samples), faces=$(length(tris))"
+            export_status[] = "Smooth isosurface $(vol.name) updated: $(round(vmin_disp, digits=3))–$(round(vmax_disp, digits=3)) $(_volume_units_label(vol)), opacity=$(round(alpha_val, digits=2)), samples=$(selected_samples), faces=$(length(tris))"
         end
     end
 
@@ -2084,7 +2099,7 @@ function modem_3d_viewer_crosssections(
             isempty(s) && (s = "0")
             return replace(replace(s, "." => "p"), "-" => "m")
         end
-        units_token = vol_kind == :density ? "g_cc" : "ohm_m"
+        units_token = strip(replace(_volume_units_label(vol), "Ω" => "ohm", r"[^A-Za-z0-9]+" => "_"), '_')
         range_tag = if isfinite(vmin_display) && isfinite(vmax_display)
             "_iso_range_$( _fmt_range_token(vmin_display) )_to_$( _fmt_range_token(vmax_display) )_$(units_token)"
         else
@@ -2877,8 +2892,14 @@ function main(; open_window::Bool = true, show_banner::Bool = true)
             lowercase(splitext(path)[2]) == ".xyz" ? load_point_volume(path, kind, units) :
             (M_target === nothing ? load_project_crs_volume(path) : load_local_mt_aligned_volume(path))
         # Density is configured and read in kg/m^3 but displayed in g/cc throughout.
+        # `density_reference_kg_m3` turns a contrast model into absolute density; without
+        # it a contrast model is shown as Δρ, with isosurface defaults from its own range.
         kind === :density || return volume
-        return (A = volume.A ./ 1000.0, cx = volume.cx, cy = volume.cy, cz = volume.cz, name = volume.name)
+        reference = density_reference_kg_m3
+        contrast = get(volume, :contrast, false) && reference === nothing
+        A = (reference === nothing ? volume.A : volume.A .+ Float64(reference)) ./ 1000.0
+        return (A = A, cx = volume.cx, cy = volume.cy, cz = volume.cz, name = volume.name,
+            contrast = contrast, label = contrast ? "Δρ (g/cc)" : _volume_colorbar_label(:density, false))
     end
 
     loaded_volumes = Dict{Symbol, Any}()
@@ -3070,7 +3091,9 @@ function _jif3d_volume(path::AbstractString, kind::Symbol)
     J = load_model_jif3D(path)
     J.kind === kind || error("$(basename(path)) holds $(J.kind), not $(kind).")
     cx, cy = jif3d_axes_to_crs(J.east, J.north, jif3d_crs, target_crs)
-    return (A = permutedims(J.values, (2, 1, 3)), cx = cx, cy = cy, cz = J.depth, name = J.name)
+    volume = (A = permutedims(J.values, (2, 1, 3)), cx = cx, cy = cy, cz = J.depth, name = J.name)
+    # A zero background means the cells hold density contrasts, not absolute densities.
+    return kind === :density ? merge(volume, (contrast = !isempty(J.background) && all(iszero, J.background),)) : volume
 end
 
 """Gravity (mGal) or magnetic (nT) stations for "Show Data"."""

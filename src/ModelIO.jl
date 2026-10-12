@@ -225,9 +225,9 @@ end
 # (Depth, Easting, Northing), so they read here as (Northing, Easting, Depth).
 
 const JIF3D_MODEL_VARIABLES = (
-    (name = "Conductivity", kind = :resistivity, units = "ohm m"),
-    (name = "Density", kind = :density, units = "kg/m^3"),
-    (name = "Susceptibility", kind = :susceptibility, units = "SI"),
+    (name = "Conductivity", kind = :resistivity, units = "ohm m", background = "bg_conductivities"),
+    (name = "Density", kind = :density, units = "kg/m^3", background = "bg_densities"),
+    (name = "Susceptibility", kind = :susceptibility, units = "SI", background = "bg_susceptibilities"),
 )
 
 is_jif3d_file(path::AbstractString) = lowercase(splitext(path)[2]) == ".nc"
@@ -249,6 +249,8 @@ _centers(edges) = (edges[1:end-1] .+ edges[2:end]) ./ 2
 Read a jif3d `.nc` model. Conductivity is returned as resistivity in ohm m; density
 (kg/m^3) and susceptibility (SI) are returned unchanged. `values` is indexed
 (north, east, depth), with cell centres in `north`, `east` and `depth` (positive down).
+`background` holds the layered background values in the same units (empty if absent);
+a density model whose background is all zero is a density contrast.
 """
 function load_model_jif3D(path::AbstractString)
     NCDataset(path) do ds
@@ -263,13 +265,18 @@ function load_model_jif3D(path::AbstractString)
         if spec.kind === :resistivity
             values = map(s -> s > 0 ? 1.0 / s : NaN, values)
         end
+        # Older jif3D releases wrote density in g/cm3; jif3D itself rescales those by 1000.
+        legacy_density = spec.kind === :density && strip(string(get(var.attrib, "units", ""))) == "g/cm3"
+        legacy_density && (values .*= 1000.0)
+        background = haskey(ds, spec.background) ? Float64.(collect(ds[spec.background][:])) : Float64[]
+        legacy_density && (background .*= 1000.0)
         north_edges = _jif3d_edges(ds, "Northing")
         east_edges = _jif3d_edges(ds, "Easting")
         depth_edges = _jif3d_edges(ds, "Depth")
         size(values) == (length(north_edges) - 1, length(east_edges) - 1, length(depth_edges) - 1) ||
             error("jif3d $(spec.name) size $(size(values)) does not match its mesh.")
         return (kind = spec.kind, units = spec.units, name = splitext(basename(path))[1],
-            values = values,
+            values = values, background = background,
             north = _centers(north_edges), east = _centers(east_edges), depth = _centers(depth_edges),
             north_edges = north_edges, east_edges = east_edges, depth_edges = depth_edges)
     end
