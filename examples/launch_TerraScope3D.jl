@@ -92,7 +92,13 @@ const TERRASCOPE_LAUNCH_CONFIG = (
 using TerraScope
 
 let inputs = TERRASCOPE_LAUNCH_CONFIG.inputs, shapefiles = TERRASCOPE_LAUNCH_CONFIG.shapefiles
-	entries = vcat([(String(name), getfield(inputs, name)) for name in keys(inputs)],
+	# `seismic_data` may be one path or a list of paths and (path =, …) entries; check each line.
+	seismic = get(inputs, :seismic_data, "")
+	seismic = seismic === nothing ? [""] : (seismic isa AbstractString || seismic isa NamedTuple) ? [seismic] : collect(seismic)
+	seismic_paths = [String(entry isa NamedTuple ? entry.path : entry) for entry in seismic]
+	isempty(seismic_paths) && (seismic_paths = [""])
+	entries = vcat([(String(name), getfield(inputs, name)) for name in keys(inputs) if name != :seismic_data],
+		[("seismic_data", path) for path in seismic_paths],
 		[("shapefile", entry.path) for entry in shapefiles])
 	configured = [path for (_, path) in entries if !isempty(path)]
 
