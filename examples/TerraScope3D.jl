@@ -153,7 +153,7 @@ end
 function _seismic_depth_step(path, domain, velocity_m_s, forced)
     drop(why) = (step = nothing, info = why, ok = false)
     h = try _segy_header(path) catch err; return drop("unreadable SEG-Y header ($(sprint(showerror, err)))") end
-    span(step) = "0–$(round((h.ns - 1) * step / 1000, digits = 1)) km"
+    span(step) = "0–$(round((h.ns - 1) * step / 1000, digits = 1)) km in the file"
     by_text = occursin(r"DEPTH[- ]?(CONVERT|DOMAIN|MIGRAT|SECTION|STEP|AXIS)|\bDZ\s*=", h.text)
     by_name = occursin(r"depth"i, basename(path))
     auto = domain === nothing || Symbol(domain) === :auto
@@ -1274,8 +1274,14 @@ function load_seismic_curtain_from_segy(path::AbstractString;
     n_samples, n_traces = size(data)
     length(headers) == n_traces || error("SEG-Y trace header count ($(length(headers))) != trace count ($(n_traces))")
 
+    # Depth-converted lines are often zero-padded below the converted range (6 s at
+    # 6000 m/s fills 18 km of a 20 km trace). Stop at the last sample with data in any
+    # trace, so the padding is not drawn as a blank band; kept samples keep their depth.
+    last_live = something(findlast(i -> any(!iszero, view(data, i, :)), 1:n_samples), 0)
+    last_live >= 2 || error("SEG-Y file has no data below its first sample")
+
     it = unique(round.(Int, range(1, n_traces; length = min(max_traces, n_traces))))
-    is = unique(round.(Int, range(1, n_samples; length = min(max_samples, n_samples))))
+    is = unique(round.(Int, range(1, last_live; length = min(max_samples, last_live))))
 
     xs = Vector{Float64}(undef, length(it))
     ys = Vector{Float64}(undef, length(it))
@@ -1320,6 +1326,7 @@ function load_seismic_curtain_from_segy(path::AbstractString;
         line_z = -Float64(top_z_m),
         n_traces = n_traces,
         n_samples = n_samples,
+        n_samples_live = last_live,
         n_traces_used = nt,
         n_samples_used = ns
     )
@@ -3055,6 +3062,8 @@ function main(; open_window::Bool = true, show_banner::Bool = true)
                 max_samples = seismic_max_samples,
                 clip_quantile = seismic_clip_quantile)
             push!(seismic_curtains, merge(curtain, (label = spec.label, line_color = spec.line_color)))
+            curtain.n_samples_live < curtain.n_samples &&
+                println("  \e[90mseismic $(spec.label): data ends at $(round(-minimum(curtain.Z) / 1000, digits = 1)) km; the zero samples below are not drawn\e[0m")
         catch err
             @warn "Failed to load seismic line $(spec.label); proceeding without it." exception=(err, catch_backtrace())
         end
