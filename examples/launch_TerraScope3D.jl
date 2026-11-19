@@ -38,7 +38,14 @@ const TERRASCOPE_LAUNCH_CONFIG = (
 		gravity_data   = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\gravity.xyz",
 		magnetic_model = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\susceptibility.xyz",
 		magnetic_data  = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\magnetic.xyz",
-		seismic_data   = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\fire_updated.sgy",
+		# SEG-Y: one path, or a list with one entry per line. The depth step is read from
+		# each file. A file whose header does not say it is depth gets `domain = :depth`;
+		# a time section gets `velocity_m_s` (depth = time × v / 2).
+		seismic_data   = [
+			(path = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\fire_updated.sgy", domain = :depth),
+			# raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\models\Line1_DMOstk_mig5800_tdepth6000_dat90m.sgy",                     # Depth file: path only.
+			# (path = raw"D:\GitHub\JuliaGeophysics\TerraScope.jl\Data\demo\models\Line3_DMOstk_mig5800_dat110m.sgy", velocity_m_s = 5500),  # Time section.
+		],
 	),
 
 	# ── 2. SHAPEFILES ────────────────────────────────────────────────────────────
@@ -70,7 +77,7 @@ const TERRASCOPE_LAUNCH_CONFIG = (
 		show = true, display_mode = :envelope,               # `:original` for signed amplitudes.
 		trace_xy = :source,                                  # Trace header for coordinates: source, receiver group or CDP.
 		max_traces = 1400, max_samples = 1200,               # Caps that keep large files interactive.
-		sample_spacing_m = 12.5, clip_quantile = 0.995,      # Trace resampling distance, and amplitude clipping.
+		clip_quantile = 0.995,                               # Amplitude clipping. The depth step is read from each SEG-Y file.
 		show_model_section = false,                          # Show the model section along the profile at start.
 	),
 

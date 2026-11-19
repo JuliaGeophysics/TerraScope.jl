@@ -96,7 +96,9 @@ DEFAULT_TERRASCOPE_LAUNCH_CONFIG = (
         show = true,
         trace_xy = :source,
         display_mode = :original,
-        sample_spacing_m = 12.5,
+        sample_spacing_m = nothing,  # Depth step (m); `nothing` reads it from each SEG-Y file.
+        domain = :auto,              # :auto detects depth/time per file; :depth or :time forces it.
+        velocity_m_s = nothing,      # Converts time sections to depth (depth = time × v / 2).
         top_z_m = 0.0,
         max_traces = 1400,
         max_samples = 1200,
@@ -122,19 +124,91 @@ gravity_model_file = _input_path(launch_config.inputs.gravity_model)
 gravity_data_file = _input_path(launch_config.inputs.gravity_data)
 magnetic_model_file = _input_path(launch_config.inputs.magnetic_model)
 magnetic_data_file = _input_path(launch_config.inputs.magnetic_data)
+# Depth step of a seismic line, from the SEG-Y file itself. A depth-converted file (its
+# text header says DEPTH-CONVERTED, DZ =, …, or its name says depth) stores the step in
+# the sample-interval field as millimetres: 5000 → 5.0 m. A time file stores microseconds
+# and is converted only with `velocity_m_s`; without one it is left out, not drawn at a
+# wrong depth. A `sample_spacing_m` forces the step, with a warning when the file disagrees.
+const SEGY_MAX_DEPTH_KM = 150.0      # Deeper than this means a misread header; the line is left out.
+
+# Textual header as upper-case text, whether written in ASCII or EBCDIC (letters and digits).
+function _segy_text(bytes::AbstractVector{UInt8})
+    ebcdic(b) = 0xC1 <= b <= 0xC9 ? 'A' + (b - 0xC1) : 0xD1 <= b <= 0xD9 ? 'J' + (b - 0xD1) :
+                0xE2 <= b <= 0xE9 ? 'S' + (b - 0xE2) : 0xF0 <= b <= 0xF9 ? '0' + (b - 0xF0) :
+                0x81 <= b <= 0x89 ? 'A' + (b - 0x81) : 0x91 <= b <= 0x99 ? 'J' + (b - 0x91) :
+                0xA2 <= b <= 0xA9 ? 'S' + (b - 0xA2) : b == 0x7E ? '=' : ' '
+    as_ascii = String(map(b -> 0x20 <= b < 0x7F ? Char(b) : ' ', bytes))
+    return uppercase(as_ascii * " " * String(map(ebcdic, bytes)))
+end
+
+# Sample interval and count from the binary header, the first trace header's interval, the text header.
+function _segy_header(path)
+    head = open(io -> read(io, 3600 + 240), path)
+    length(head) == 3840 || error("shorter than a SEG-Y header")
+    be16(i) = Int(ntoh(reinterpret(UInt16, head[i:i+1])[1]))      # `i` is the 1-based first byte.
+    return (dt = be16(3217), ns = be16(3221), trace_dt = be16(3600 + 117), text = _segy_text(head[1:3200]))
+end
+
+# (step = metres per sample or nothing, info = what was found, ok = false when the line is left out).
+function _seismic_depth_step(path, domain, velocity_m_s, forced)
+    drop(why) = (step = nothing, info = why, ok = false)
+    h = try _segy_header(path) catch err; return drop("unreadable SEG-Y header ($(sprint(showerror, err)))") end
+    span(step) = "0–$(round((h.ns - 1) * step / 1000, digits = 1)) km"
+    by_text = occursin(r"DEPTH[- ]?(CONVERT|DOMAIN|MIGRAT|SECTION|STEP|AXIS)|\bDZ\s*=", h.text)
+    by_name = occursin(r"depth"i, basename(path))
+    auto = domain === nothing || Symbol(domain) === :auto
+    kind = auto ? ((by_text || by_name) ? :depth : :time) : Symbol(domain)
+    kind in (:depth, :time) || return drop("`domain` must be :auto, :depth or :time, not $(repr(domain))")
+    source = !auto ? "set by hand" : by_text ? "text header" : by_name ? "file name" : "no depth marker in the file"
+
+    if forced !== nothing
+        step = Float64(forced)
+        step > 0 || return drop("`sample_spacing_m` must be positive")
+        h.dt / 1000 == step ||
+            @warn "Seismic $(basename(path)): `sample_spacing_m = $(forced)` overrides the file's sample interval ($(h.dt), $(kind) by $(source)). Remove it to read the step from the file."
+        info = "$(step) m/sample (sample_spacing_m), $(span(step))"
+    else
+        h.dt > 0 || return drop("sample interval is 0 in the binary header — give `sample_spacing_m`")
+        h.trace_dt in (0, h.dt) || return drop("binary header says $(h.dt) but trace header says $(h.trace_dt) — give `sample_spacing_m`")
+        if kind === :depth
+            step = h.dt / 1000                                   # Millimetres → metres.
+            info = "depth ($(source)), $(step) m/sample, $(span(step))"
+        elseif velocity_m_s === nothing
+            return drop("time section ($(h.dt / 1000) ms/sample, $(source)) — give `velocity_m_s`, or `domain = :depth` if it is depth")
+        else
+            Float64(velocity_m_s) > 0 || return drop("`velocity_m_s` must be positive")
+            step = h.dt * 1e-6 * Float64(velocity_m_s) / 2       # Two-way time → depth.
+            info = "time, $(h.dt / 1000) ms/sample at $(velocity_m_s) m/s → $(round(step, digits = 3)) m/sample, $(span(step))"
+        end
+    end
+    (h.ns - 1) * step / 1000 <= SEGY_MAX_DEPTH_KM ||
+        return drop("would reach $(round((h.ns - 1) * step / 1000, digits = 1)) km — header misread? give `sample_spacing_m`")
+    return (step = step, info = info, ok = true)
+end
+
 # `seismic_data` is one path, or a list of lines: paths or (path =, label =, line_color =,
-# sample_spacing_m =, top_z_m =) entries. Fields left out use the `seismic` settings.
+# domain =, velocity_m_s =, sample_spacing_m =, top_z_m =) entries. Fields left out use
+# the `seismic` settings.
 function _seismic_spec(entry)
     entry isa NamedTuple || (entry = (path = entry,))
     path = _input_path(entry.path)
+    s = launch_config.seismic
+    depth = isempty(path) || !isfile(path) ? (step = nothing, info = "", ok = true) :      # Missing: warned at load.
+        _seismic_depth_step(path, get(entry, :domain, s.domain), get(entry, :velocity_m_s, s.velocity_m_s),
+            get(entry, :sample_spacing_m, s.sample_spacing_m))
     return (path = path,
         label = String(get(entry, :label, splitext(basename(path))[1])),
         line_color = get(entry, :line_color, nothing),
-        sample_spacing_m = get(entry, :sample_spacing_m, nothing),
+        sample_spacing_m = depth.step, depth_info = depth.info, ok = depth.ok,
         top_z_m = get(entry, :top_z_m, nothing))
 end
 _seismic_entries(x) = x === nothing ? [] : (x isa AbstractString || x isa NamedTuple) ? [x] : collect(x)
 seismic_specs = filter(s -> !isempty(s.path), map(_seismic_spec, _seismic_entries(launch_config.inputs.seismic_data)))
+for s in seismic_specs                                       # Report each line's depth axis before loading.
+    s.ok ? (isempty(s.depth_info) || println("  \e[90mseismic $(s.label): $(s.depth_info)\e[0m")) :
+        @warn "Seismic line $(s.label) left out: $(s.depth_info)"
+end
+seismic_specs = filter(s -> s.ok, seismic_specs)
 
 # Every model input, in the order the property buttons appear. `kind` is the physical
 # property the viewer colours and labels; the method name is what the user configures.
@@ -218,7 +292,6 @@ selector_show_latlon_ticks = launch_config.coordinate.selector_show_latlon_ticks
 show_seismic = launch_config.seismic.show
 seismic_trace_xy = launch_config.seismic.trace_xy
 seismic_display_mode = launch_config.seismic.display_mode
-seismic_sample_spacing_m = launch_config.seismic.sample_spacing_m
 seismic_top_z_m = launch_config.seismic.top_z_m
 seismic_max_traces = launch_config.seismic.max_traces
 seismic_max_samples = launch_config.seismic.max_samples
@@ -2976,7 +3049,7 @@ function main(; open_window::Bool = true, show_banner::Bool = true)
             curtain = load_seismic_curtain_from_segy(spec.path;
                 trace_xy = seismic_trace_xy,
                 display_mode = resolved_seismic_display_mode,
-                sample_spacing_m = something(spec.sample_spacing_m, seismic_sample_spacing_m),
+                sample_spacing_m = spec.sample_spacing_m,
                 top_z_m = something(spec.top_z_m, seismic_top_z_m),
                 max_traces = seismic_max_traces,
                 max_samples = seismic_max_samples,

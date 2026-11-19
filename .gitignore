@@ -16,3 +16,4 @@ docs/site/
 docs/node_modules/
 docs/package-lock.json
 docs/Manifest.toml
+examples/LaunchTerra_Scope3D_GEL.jl
